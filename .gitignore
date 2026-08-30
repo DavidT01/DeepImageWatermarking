@@ -3,3 +3,6 @@ condaenv.*.requirements.txt
 
 # Private working notes
 /internal-docs/
+
+# Python
+__pycache__/
