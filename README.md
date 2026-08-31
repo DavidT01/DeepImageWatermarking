@@ -36,6 +36,20 @@ On a machine with a supported NVIDIA GPU, `torch.cuda.is_available()` should
 return `True`. On a machine without an NVIDIA GPU, the same project runs on the
 CPU.
 
+## Tests
+
+Run all tests from the repository root:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+To run a single test file:
+
+```bash
+python -m unittest discover -s tests -p "test_noise.py" -v
+```
+
 ## Authors
 
 - David Toholj
