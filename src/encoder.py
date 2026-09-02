@@ -24,12 +24,18 @@ class WatermarkEncoder(nn.Module):
 
         self.conv_out = nn.Conv2d(32, image_channels, kernel_size=3, padding=1)
 
-    def forward(self, images: torch.Tensor, messages: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        images: torch.Tensor,
+        messages: torch.Tensor,
+        masks: torch.Tensor,
+    ) -> torch.Tensor:
         """Embed binary messages into input images and return watermarked images.
 
         Args:
             images: Batch of images with shape (N, C, H, W) and values in [0, 1].
             messages: Batch of binary messages with shape (N, message_length).
+            masks: Batch of content masks with shape (N, 1, H, W).
 
         Returns:
             Watermarked images with shape (N, C, H, W) and values in [0, 1].
@@ -51,5 +57,5 @@ class WatermarkEncoder(nn.Module):
 
         residual = self.conv_out(x)
 
-        watermarked_images = torch.clamp(images + residual, 0.0, 1.0)
+        watermarked_images = torch.clamp(images + residual * masks, 0.0, 1.0)
         return watermarked_images
