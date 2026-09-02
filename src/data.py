@@ -10,9 +10,7 @@ import torchvision.transforms.functional as F
 from src.utils import set_seed
 
 class WatermarkDataset(Dataset):
-    """
-    PyTorch Dataset class that reads data based on splits.json and loads images from the data/raw/ directory.
-    """
+    """Load padded images and their content masks from a dataset split."""
     def __init__(self, data_dir, splits_file, split='train'):
         self.data_dir = Path(data_dir) / "raw"
         
@@ -46,12 +44,15 @@ class WatermarkDataset(Dataset):
         pad_top = pad_h // 2
         pad_right = pad_w - pad_left
         pad_bottom = pad_h - pad_top
-        
+
+        mask = torch.ones((1, new_h, new_w), dtype=torch.float32)
+
         image = F.pad(image, (pad_left, pad_top, pad_right, pad_bottom), fill=0)
-        
+        mask = F.pad(mask, (pad_left, pad_top, pad_right, pad_bottom), fill=0)
+
         image = F.to_tensor(image)
-        
-        return image
+
+        return image, mask
 
 def get_dataloaders(data_dir, splits_file, batch_size=32, num_workers=4):
     """
@@ -92,15 +93,16 @@ def get_dataset_stats(data_dir, splits_file):
             
         dataset = WatermarkDataset(data_dir, splits_file, split='train')
         if len(dataset) > 0:
-            sample_shape = list(dataset[0].shape)
+            sample_image, _ = dataset[0]
+            sample_shape = list(sample_image.shape)
             
             min_val = float('inf')
             max_val = float('-inf')
 
             loader = DataLoader(dataset, batch_size=64, num_workers=4)
-            for batch in loader:
-                batch_min = batch.min().item()
-                batch_max = batch.max().item()
+            for images, _ in loader:
+                batch_min = images.min().item()
+                batch_max = images.max().item()
                 if batch_min < min_val:
                     min_val = batch_min
                 if batch_max > max_val:

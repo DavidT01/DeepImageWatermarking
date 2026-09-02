@@ -14,8 +14,9 @@ class WatermarkPipelineTest(unittest.TestCase):
 
         images = torch.rand(2, 3, 128, 128)
         messages = torch.randint(0, 2, (2, 32), dtype=torch.float32)
+        masks = torch.ones(2, 1, 128, 128)
 
-        watermarked = encoder(images, messages)
+        watermarked = encoder(images, messages, masks)
         logits = decoder(watermarked)
 
         loss = nn.BCEWithLogitsLoss()(logits, messages)
@@ -33,8 +34,9 @@ class WatermarkPipelineTest(unittest.TestCase):
         batch_size = 4
         images = torch.rand(batch_size, 3, 128, 128)
         messages = torch.randint(0, 2, (batch_size, 32), dtype=torch.float32)
+        masks = torch.ones(batch_size, 1, 128, 128)
 
-        watermarked = encoder(images, messages)
+        watermarked = encoder(images, messages, masks)
         self.assertEqual(watermarked.shape, (batch_size, 3, 128, 128))
         self.assertGreaterEqual(watermarked.min().item(), 0.0)
         self.assertLessEqual(watermarked.max().item(), 1.0)
