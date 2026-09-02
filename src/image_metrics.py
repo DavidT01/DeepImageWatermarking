@@ -31,7 +31,7 @@ def peak_signal_noise_ratio(images: torch.Tensor, watermarked_images: torch.Tens
         max_val: Maximum possible pixel value (default 1.0).
 
     Returns:
-        Scalar PyTorch tensor containing average PSNR in dB.
+        Scalar PyTorch tensor containing PSNR in dB calculated from the aggregate MSE of all provided pixels.
     """
     mse = mean_squared_error(images, watermarked_images)
     if mse.item() == 0.0:
