@@ -6,23 +6,34 @@ from torch import nn
 class WatermarkEncoder(nn.Module):
     """Embed a binary message into an image batch as a watermark."""
 
-    def __init__(self, message_length: int = 32, image_channels: int = 3) -> None:
+    def __init__(
+        self,
+        message_length: int = 32,
+        image_channels: int = 3,
+        feature_channels: tuple[int, int, int] = (64, 64, 32),
+    ) -> None:
         super().__init__()
         self.message_length = message_length
         self.image_channels = image_channels
 
         in_channels = image_channels + message_length
+        channels1, channels2, channels3 = feature_channels
 
-        self.conv1 = nn.Conv2d(in_channels, 64, kernel_size=3, padding=1)
+        self.conv1 = nn.Conv2d(in_channels, channels1, kernel_size=3, padding=1)
         self.relu1 = nn.ReLU()
 
-        self.conv2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(channels1, channels2, kernel_size=3, padding=1)
         self.relu2 = nn.ReLU()
 
-        self.conv3 = nn.Conv2d(64, 32, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv2d(channels2, channels3, kernel_size=3, padding=1)
         self.relu3 = nn.ReLU()
 
-        self.conv_out = nn.Conv2d(32, image_channels, kernel_size=3, padding=1)
+        self.conv_out = nn.Conv2d(
+            channels3,
+            image_channels,
+            kernel_size=3,
+            padding=1,
+        )
 
     def forward(
         self,

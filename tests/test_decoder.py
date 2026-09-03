@@ -26,3 +26,11 @@ class WatermarkDecoderTest(unittest.TestCase):
 
         for parameter in decoder.parameters():
             self.assertIsNotNone(parameter.grad)
+
+    def test_custom_feature_channels(self) -> None:
+        decoder = WatermarkDecoder(feature_channels=(16, 32, 64))
+
+        self.assertEqual(decoder.conv1.out_channels, 16)
+        self.assertEqual(decoder.conv2.out_channels, 32)
+        self.assertEqual(decoder.conv3.out_channels, 64)
+        self.assertEqual(decoder.fc.in_features, 64)

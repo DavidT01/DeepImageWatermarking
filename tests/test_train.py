@@ -54,6 +54,8 @@ class TrainingUtilitiesTest(unittest.TestCase):
                 experiment_name="smoke",
                 epochs=2,
                 batch_size=2,
+                encoder_channels=(32, 24, 16),
+                decoder_channels=(16, 32, 64),
                 learning_rate=0.0,
                 device="cpu",
                 checkpoint_dir=str(root / "checkpoints"),
@@ -61,7 +63,7 @@ class TrainingUtilitiesTest(unittest.TestCase):
                 attack_configs=[{"name": "none"}],
             )
 
-            _, _, history = fit(loader, loader, config=config)
+            encoder, decoder, history = fit(loader, loader, config=config)
             checkpoint_path = root / "checkpoints" / "smoke" / "last.pt"
             checkpoint = torch.load(
                 checkpoint_path,
@@ -78,10 +80,22 @@ class TrainingUtilitiesTest(unittest.TestCase):
             self.assertTrue(checkpoint_path.exists())
 
         self.assertEqual(history[0]["val_loss"], history[1]["val_loss"])
+        self.assertEqual(encoder.conv1.out_channels, 32)
+        self.assertEqual(decoder.conv3.out_channels, 64)
         self.assertEqual(checkpoint["config"]["experiment_name"], "smoke")
+        self.assertEqual(
+            checkpoint["config"]["encoder_channels"],
+            (32, 24, 16),
+        )
+        self.assertEqual(
+            checkpoint["config"]["decoder_channels"],
+            (16, 32, 64),
+        )
         self.assertEqual(checkpoint["config"]["attack_configs"], [{"name": "none"}])
         self.assertEqual(len(rows), 2)
         self.assertTrue(all(row["experiment"] == "smoke" for row in rows))
+        self.assertEqual(rows[0]["encoder_channels"], "[32, 24, 16]")
+        self.assertEqual(rows[0]["decoder_channels"], "[16, 32, 64]")
 
     def test_checkpoint_restores_random_state(self) -> None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
