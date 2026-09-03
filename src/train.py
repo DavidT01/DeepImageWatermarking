@@ -346,11 +346,14 @@ def run_training(
     config: TrainConfig | None = None,
     num_workers: int = 0,
     resume_from: str | Path | None = None,
+    fixed_train_messages: torch.Tensor | None = None,
+    fixed_val_messages: torch.Tensor | None = None,
+    shuffle_train: bool = True,
 ) -> tuple[nn.Module, nn.Module, list[dict[str, Any]]]:
     """Build project dataloaders and start training."""
 
     config = config or TrainConfig()
-    train_loader, val_loader, _ = get_dataloaders(data_dir, splits_file, batch_size=config.batch_size, num_workers=num_workers)
+    train_loader, val_loader, _ = get_dataloaders(data_dir, splits_file, batch_size=config.batch_size, num_workers=num_workers, shuffle_train=shuffle_train)
 
     if train_loader is None or val_loader is None:
         raise ValueError("Both train and val splits are required for training")
@@ -360,4 +363,6 @@ def run_training(
         val_loader,
         config=config,
         resume_from=resume_from,
+        fixed_train_messages=fixed_train_messages,
+        fixed_val_messages=fixed_val_messages,
     )
