@@ -37,8 +37,16 @@ class MessageDecoder(nn.Module):
 
 class EvaluationUtilitiesTest(unittest.TestCase):
     def test_load_models(self) -> None:
-        encoder = WatermarkEncoder(message_length=8)
-        decoder = WatermarkDecoder(message_length=8)
+        encoder_channels = (32, 24, 16)
+        decoder_channels = (16, 32, 64)
+        encoder = WatermarkEncoder(
+            message_length=8,
+            feature_channels=encoder_channels,
+        )
+        decoder = WatermarkDecoder(
+            message_length=8,
+            feature_channels=decoder_channels,
+        )
         optimizer = torch.optim.Adam(
             list(encoder.parameters()) + list(decoder.parameters())
         )
@@ -52,7 +60,11 @@ class EvaluationUtilitiesTest(unittest.TestCase):
                 optimizer,
                 epoch=1,
                 best_val_loss=0.5,
-                config=TrainConfig(message_length=8),
+                config=TrainConfig(
+                    message_length=8,
+                    encoder_channels=encoder_channels,
+                    decoder_channels=decoder_channels,
+                ),
             )
             loaded_encoder, loaded_decoder, config = load_models(path, "cpu")
 
@@ -70,6 +82,8 @@ class EvaluationUtilitiesTest(unittest.TestCase):
         self.assertFalse(loaded_encoder.training)
         self.assertFalse(loaded_decoder.training)
         self.assertEqual(config["message_length"], 8)
+        self.assertEqual(loaded_encoder.conv3.out_channels, 16)
+        self.assertEqual(loaded_decoder.conv3.out_channels, 64)
 
     def test_evaluate_model_is_deterministic_and_ignores_padding(self) -> None:
         images = torch.zeros(3, 3, 32, 32)

@@ -26,6 +26,8 @@ class TrainConfig:
     epochs: int = 20
     batch_size: int = 32
     message_length: int = 32
+    encoder_channels: tuple[int, int, int] = (64, 64, 32)
+    decoder_channels: tuple[int, int, int] = (32, 64, 128)
     learning_rate: float = 1e-3
     image_loss_weight: float = 1.0
     device: str = "auto"
@@ -257,8 +259,14 @@ def fit(
     config = config or TrainConfig()
     set_seed()
     device = _select_device(config.device)
-    encoder = WatermarkEncoder(message_length=config.message_length).to(device)
-    decoder = WatermarkDecoder(message_length=config.message_length).to(device)
+    encoder = WatermarkEncoder(
+        message_length=config.message_length,
+        feature_channels=config.encoder_channels,
+    ).to(device)
+    decoder = WatermarkDecoder(
+        message_length=config.message_length,
+        feature_channels=config.decoder_channels,
+    ).to(device)
     optimizer = torch.optim.Adam(list(encoder.parameters()) + list(decoder.parameters()), lr=config.learning_rate)
     criterion = nn.BCEWithLogitsLoss()
     start_epoch = 0
@@ -311,6 +319,8 @@ def fit(
             "seed": SEED,
             "learning_rate": config.learning_rate,
             "batch_size": config.batch_size,
+            "encoder_channels": json.dumps(config.encoder_channels),
+            "decoder_channels": json.dumps(config.decoder_channels),
             "image_loss_weight": config.image_loss_weight,
             "attack_configs": json.dumps(config.attack_configs),
         }

@@ -51,3 +51,11 @@ class WatermarkEncoderTest(unittest.TestCase):
         padding = masks.expand_as(images) == 0
 
         self.assertTrue(torch.equal(watermarked[padding], images[padding]))
+
+    def test_custom_feature_channels(self) -> None:
+        encoder = WatermarkEncoder(feature_channels=(32, 24, 16))
+
+        self.assertEqual(encoder.conv1.out_channels, 32)
+        self.assertEqual(encoder.conv2.out_channels, 24)
+        self.assertEqual(encoder.conv3.out_channels, 16)
+        self.assertEqual(encoder.conv_out.in_channels, 16)

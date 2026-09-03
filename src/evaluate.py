@@ -27,12 +27,16 @@ def load_models(
     )
     config = checkpoint["config"].copy()
     config["seed"] = checkpoint.get("seed", SEED)
+    encoder_channels = tuple(config.get("encoder_channels", (64, 64, 32)))
+    decoder_channels = tuple(config.get("decoder_channels", (32, 64, 128)))
 
     encoder = WatermarkEncoder(
-        message_length=config["message_length"]
+        message_length=config["message_length"],
+        feature_channels=encoder_channels,
     ).to(device)
     decoder = WatermarkDecoder(
-        message_length=config["message_length"]
+        message_length=config["message_length"],
+        feature_channels=decoder_channels,
     ).to(device)
 
     encoder.load_state_dict(checkpoint["encoder_state_dict"])
