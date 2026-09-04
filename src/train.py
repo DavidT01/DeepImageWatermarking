@@ -16,7 +16,7 @@ from src.decoder import WatermarkDecoder
 from src.encoder import WatermarkEncoder
 from src.image_metrics import mean_squared_error, peak_signal_noise_ratio
 from src.message_metrics import bit_error_rate, exact_message_accuracy
-from src.noise import apply_random_attack
+from src.noise import apply_random_attack_with_mask
 from src.utils import SEED, set_seed
 
 @dataclass
@@ -36,6 +36,7 @@ class TrainConfig:
     checkpoint_dir: str = "results/checkpoints"
     log_path: str = "results/experiments.csv"
     attack_configs: list[dict[str, Any]] | None = None
+    validation_attack_configs: list[dict[str, Any]] | None = None
     print_every: int = 1
     checkpoint_metric: str = "loss"
     target_val_ber: float | None = None
@@ -86,11 +87,16 @@ def _run_batch(encoder: nn.Module, decoder: nn.Module, images: torch.Tensor, mas
     watermarked = encoder(images, messages, masks)
 
     if attack_configs:
-        decoder_input = apply_random_attack(watermarked, attack_configs)
+        decoder_input, decoder_masks = apply_random_attack_with_mask(
+            watermarked,
+            masks,
+            attack_configs,
+        )
     else:
         decoder_input = watermarked
+        decoder_masks = masks
 
-    logits = decoder(decoder_input, masks)
+    logits = decoder(decoder_input, decoder_masks)
     message_loss = criterion(logits, messages)
 
     content = masks.expand_as(images).bool()
@@ -187,6 +193,50 @@ def validate(encoder: nn.Module, decoder: nn.Module, loader: Any, criterion: nn.
         raise ValueError("The validation loader is empty")
 
     return {name: value / samples for name, value in totals.items()}
+
+
+def _validate_reproducibly(
+    encoder: nn.Module,
+    decoder: nn.Module,
+    loader: Any,
+    criterion: nn.Module,
+    device: torch.device,
+    message_length: int,
+    image_loss_weight: float,
+    attack_configs: list[dict[str, Any]] | None,
+    fixed_messages: torch.Tensor,
+) -> dict[str, float]:
+    """Validate with fixed attack randomness without changing training RNG."""
+    python_state = random.getstate()
+    torch_state = torch.get_rng_state()
+    cuda_state = (
+        torch.cuda.get_rng_state_all()
+        if torch.cuda.is_available()
+        else None
+    )
+
+    random.seed(SEED)
+    torch.manual_seed(SEED)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(SEED)
+
+    try:
+        return validate(
+            encoder=encoder,
+            decoder=decoder,
+            loader=loader,
+            criterion=criterion,
+            device=device,
+            message_length=message_length,
+            image_loss_weight=image_loss_weight,
+            attack_configs=attack_configs,
+            fixed_messages=fixed_messages,
+        )
+    finally:
+        random.setstate(python_state)
+        torch.set_rng_state(torch_state)
+        if cuda_state is not None:
+            torch.cuda.set_rng_state_all(cuda_state)
 
 def save_checkpoint(path: str | Path, encoder: nn.Module, decoder: nn.Module, optimizer: torch.optim.Optimizer, epoch: int,
                     best_val_loss: float, config: TrainConfig) -> None:
@@ -306,6 +356,8 @@ def fit(
 
     if resume_from is not None:
         start_epoch, best_val_loss = load_checkpoint(resume_from, encoder, decoder, optimizer, device)
+        for parameter_group in optimizer.param_groups:
+            parameter_group["lr"] = config.learning_rate
 
     history: list[dict[str, Any]] = []
     checkpoint_dir = Path(config.checkpoint_dir) / config.experiment_name
@@ -326,7 +378,7 @@ def fit(
             attack_configs=config.attack_configs,
             fixed_messages=fixed_train_messages,
         )
-        val_stats = validate(
+        val_stats = _validate_reproducibly(
             encoder=encoder,
             decoder=decoder,
             loader=val_loader,
@@ -334,7 +386,7 @@ def fit(
             device=device,
             message_length=config.message_length,
             image_loss_weight=config.image_loss_weight,
-            attack_configs=None,
+            attack_configs=config.validation_attack_configs,
             fixed_messages=fixed_val_messages,
         )
 
@@ -362,6 +414,10 @@ def fit(
             "attack_configs": json.dumps(config.attack_configs),
             "epoch_seconds": epoch_seconds,
         }
+        if config.validation_attack_configs is not None:
+            row["validation_attack_configs"] = json.dumps(
+                config.validation_attack_configs
+            )
         row.update({f"train_{name}": value for name, value in train_stats.items()})
         row.update({f"val_{name}": value for name, value in val_stats.items()})
         history.append(row)

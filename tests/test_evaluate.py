@@ -135,11 +135,14 @@ class EvaluationUtilitiesTest(unittest.TestCase):
             ],
         }
 
-        def record_attack(batch, config):
+        def record_attack(batch, batch_masks, config):
             applied_attacks.append(config["name"])
-            return batch
+            return batch, batch_masks
 
-        with patch("src.evaluate.apply_attack", side_effect=record_attack):
+        with patch(
+            "src.evaluate.apply_attack_with_mask",
+            side_effect=record_attack,
+        ):
             results = evaluate_scenarios(
                 MessageEncoder(),
                 MessageDecoder(),

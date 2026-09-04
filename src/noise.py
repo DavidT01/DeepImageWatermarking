@@ -82,3 +82,32 @@ def apply_attack(images: torch.Tensor, config: dict) -> torch.Tensor:
 def apply_random_attack(images: torch.Tensor, configs: list[dict]) -> torch.Tensor:
     """Apply one randomly selected attack configuration."""
     return apply_attack(images, random.choice(configs))
+
+
+def apply_attack_with_mask(
+    images: torch.Tensor,
+    masks: torch.Tensor,
+    config: dict,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Apply one attack and keep the content mask aligned with the image."""
+    attacked_images = apply_attack(images, config)
+
+    if config["name"] == "rotation":
+        attacked_masks = TF.rotate(
+            masks,
+            angle=config["angle"],
+            interpolation=InterpolationMode.NEAREST,
+            fill=0.0,
+        )
+        return attacked_images, attacked_masks
+
+    return attacked_images, masks
+
+
+def apply_random_attack_with_mask(
+    images: torch.Tensor,
+    masks: torch.Tensor,
+    configs: list[dict],
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Apply one randomly selected attack to an image-mask pair."""
+    return apply_attack_with_mask(images, masks, random.choice(configs))

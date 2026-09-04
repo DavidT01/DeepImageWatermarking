@@ -13,6 +13,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from src.train import (
     TrainConfig,
     _append_log,
+    _validate_reproducibly,
     fit,
     load_checkpoint,
     save_checkpoint,
@@ -31,7 +32,49 @@ class MarkerDecoder(nn.Module):
         return torch.where(markers > 0.5, 1.0, -1.0).expand(-1, 16)
 
 
+class PixelDecoder(nn.Module):
+    def forward(self, images, masks):
+        pixels = images[:, 0, 0, 0].unsqueeze(1)
+        return pixels.expand(-1, 16)
+
+
 class TrainingUtilitiesTest(unittest.TestCase):
+    def test_robust_validation_is_reproducible_and_preserves_rng(self) -> None:
+        images = torch.zeros(2, 3, 16, 16)
+        masks = torch.ones(2, 1, 16, 16)
+        loader = DataLoader(TensorDataset(images, masks), batch_size=2)
+        messages = torch.zeros(2, 16)
+
+        torch.manual_seed(123)
+        expected_next_random = torch.rand(4)
+        torch.manual_seed(123)
+
+        first = _validate_reproducibly(
+            PaddingOnlyEncoder(),
+            PixelDecoder(),
+            loader,
+            nn.BCEWithLogitsLoss(),
+            torch.device("cpu"),
+            message_length=16,
+            image_loss_weight=0.0,
+            attack_configs=[{"name": "gaussian_noise", "std": 0.1}],
+            fixed_messages=messages,
+        )
+        second = _validate_reproducibly(
+            PaddingOnlyEncoder(),
+            PixelDecoder(),
+            loader,
+            nn.BCEWithLogitsLoss(),
+            torch.device("cpu"),
+            message_length=16,
+            image_loss_weight=0.0,
+            attack_configs=[{"name": "gaussian_noise", "std": 0.1}],
+            fixed_messages=messages,
+        )
+
+        self.assertEqual(first, second)
+        torch.testing.assert_close(torch.rand(4), expected_next_random)
+
     def test_fit_stops_at_target_validation_ber(self) -> None:
         images = torch.rand(2, 3, 16, 16)
         masks = torch.ones(2, 1, 16, 16)
