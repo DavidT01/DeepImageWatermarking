@@ -11,10 +11,12 @@ class WatermarkEncoder(nn.Module):
         message_length: int = 32,
         image_channels: int = 3,
         feature_channels: tuple[int, int, int] = (64, 64, 32),
+        max_delta: float | None = None,
     ) -> None:
         super().__init__()
         self.message_length = message_length
         self.image_channels = image_channels
+        self.max_delta = max_delta
 
         in_channels = image_channels + message_length
         channels1, channels2, channels3 = feature_channels
@@ -67,6 +69,8 @@ class WatermarkEncoder(nn.Module):
         x = self.relu3(x)
 
         residual = self.conv_out(x)
+        if self.max_delta is not None:
+            residual = self.max_delta * torch.tanh(residual)
 
         watermarked_images = torch.clamp(images + residual * masks, 0.0, 1.0)
         return watermarked_images

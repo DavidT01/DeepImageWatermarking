@@ -5,6 +5,7 @@ import json
 import random
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 import torch
@@ -28,12 +29,14 @@ class TrainConfig:
     message_length: int = 32
     encoder_channels: tuple[int, int, int] = (64, 64, 32)
     decoder_channels: tuple[int, int, int] = (32, 64, 128)
+    encoder_max_delta: float | None = None
     learning_rate: float = 1e-3
     image_loss_weight: float = 1.0
     device: str = "auto"
     checkpoint_dir: str = "results/checkpoints"
     log_path: str = "results/experiments.csv"
     attack_configs: list[dict[str, Any]] | None = None
+    print_every: int = 1
 
 def _select_device(device: str) -> torch.device:
     """Select the configured training device."""
@@ -240,6 +243,12 @@ def _append_log(path: str | Path, row: dict[str, Any]) -> None:
     fields = list(row)
     exists = path.exists()
 
+    if exists:
+        with path.open(newline="", encoding="utf-8") as log_file:
+            existing_fields = next(csv.reader(log_file))
+        if existing_fields != fields:
+            raise ValueError("Training log columns do not match the current format")
+
     with path.open("a", newline="", encoding="utf-8") as log_file:
         writer = csv.DictWriter(log_file, fieldnames=fields)
         if not exists:
@@ -257,11 +266,15 @@ def fit(
     """Train encoder and decoder, checkpointing every epoch and the best model."""
 
     config = config or TrainConfig()
+    if config.print_every <= 0:
+        raise ValueError("print_every must be positive")
+
     set_seed()
     device = _select_device(config.device)
     encoder = WatermarkEncoder(
         message_length=config.message_length,
         feature_channels=config.encoder_channels,
+        max_delta=config.encoder_max_delta,
     ).to(device)
     decoder = WatermarkDecoder(
         message_length=config.message_length,
@@ -287,8 +300,11 @@ def fit(
 
     history: list[dict[str, Any]] = []
     checkpoint_dir = Path(config.checkpoint_dir) / config.experiment_name
+    training_start = perf_counter()
+    has_separate_validation = val_loader is not train_loader
 
     for epoch in range(start_epoch, config.epochs):
+        epoch_start = perf_counter()
         train_stats = train_one_epoch(
             encoder=encoder,
             decoder=decoder,
@@ -313,22 +329,6 @@ def fit(
             fixed_messages=fixed_val_messages,
         )
 
-        row: dict[str, Any] = {
-            "experiment": config.experiment_name,
-            "epoch": epoch + 1,
-            "seed": SEED,
-            "learning_rate": config.learning_rate,
-            "batch_size": config.batch_size,
-            "encoder_channels": json.dumps(config.encoder_channels),
-            "decoder_channels": json.dumps(config.decoder_channels),
-            "image_loss_weight": config.image_loss_weight,
-            "attack_configs": json.dumps(config.attack_configs),
-        }
-        row.update({f"train_{name}": value for name, value in train_stats.items()})
-        row.update({f"val_{name}": value for name, value in val_stats.items()})
-        history.append(row)
-        _append_log(config.log_path, row)
-
         is_best = val_stats["loss"] < best_val_loss
         if is_best:
             best_val_loss = val_stats["loss"]
@@ -337,6 +337,50 @@ def fit(
 
         if is_best:
             save_checkpoint(checkpoint_dir / "best_model.pt", encoder, decoder, optimizer, epoch, best_val_loss, config)
+
+        epoch_seconds = perf_counter() - epoch_start
+        row: dict[str, Any] = {
+            "experiment": config.experiment_name,
+            "epoch": epoch + 1,
+            "seed": SEED,
+            "learning_rate": config.learning_rate,
+            "batch_size": config.batch_size,
+            "encoder_channels": json.dumps(config.encoder_channels),
+            "decoder_channels": json.dumps(config.decoder_channels),
+            "encoder_max_delta": config.encoder_max_delta,
+            "image_loss_weight": config.image_loss_weight,
+            "attack_configs": json.dumps(config.attack_configs),
+            "epoch_seconds": epoch_seconds,
+        }
+        row.update({f"train_{name}": value for name, value in train_stats.items()})
+        row.update({f"val_{name}": value for name, value in val_stats.items()})
+        history.append(row)
+        _append_log(config.log_path, row)
+
+        should_print = (
+            epoch == start_epoch
+            or (epoch + 1) % config.print_every == 0
+            or epoch + 1 == config.epochs
+        )
+        if should_print:
+            progress = (
+                f"Epoch {epoch + 1}/{config.epochs} | "
+                f"train_loss={train_stats['loss']:.4f} | "
+                f"train_BER={train_stats['ber']:.4f} | "
+                f"train_exact={train_stats['exact_accuracy']:.4f}"
+            )
+            if has_separate_validation:
+                progress += (
+                    f" | val_loss={val_stats['loss']:.4f}"
+                    f" | val_BER={val_stats['ber']:.4f}"
+                    f" | val_exact={val_stats['exact_accuracy']:.4f}"
+                    f" | val_PSNR={val_stats['psnr']:.2f}"
+                )
+            print(f"{progress} | {epoch_seconds:.1f}s")
+
+    if history:
+        training_seconds = perf_counter() - training_start
+        print(f"Training time: {training_seconds / 60:.1f} minutes")
 
     return encoder, decoder, history
 

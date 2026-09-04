@@ -33,6 +33,7 @@ def load_models(
     encoder = WatermarkEncoder(
         message_length=config["message_length"],
         feature_channels=encoder_channels,
+        max_delta=config.get("encoder_max_delta"),
     ).to(device)
     decoder = WatermarkDecoder(
         message_length=config["message_length"],
