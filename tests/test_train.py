@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 import torch
 from torch import nn
@@ -25,9 +26,9 @@ class PaddingOnlyEncoder(nn.Module):
 
 
 class MarkerDecoder(nn.Module):
-    def forward(self, images):
+    def forward(self, images, masks):
         markers = images[:, 0, 8, 0].unsqueeze(1)
-        return torch.where(markers > 0.5, 1.0, -1.0).expand(-1, 32)
+        return torch.where(markers > 0.5, 1.0, -1.0).expand(-1, 16)
 
 
 class TrainingUtilitiesTest(unittest.TestCase):
@@ -52,7 +53,7 @@ class TrainingUtilitiesTest(unittest.TestCase):
             loader,
             nn.BCEWithLogitsLoss(),
             torch.device("cpu"),
-            fixed_messages=torch.zeros(3, 32),
+            fixed_messages=torch.zeros(3, 16),
         )
 
         self.assertEqual(stats["image_loss"], 0.0)
@@ -73,8 +74,8 @@ class TrainingUtilitiesTest(unittest.TestCase):
                 experiment_name="smoke",
                 epochs=2,
                 batch_size=2,
-                encoder_channels=(32, 24, 16),
-                decoder_channels=(16, 32, 64),
+                encoder_channels=24,
+                decoder_channels=32,
                 encoder_max_delta=0.03,
                 learning_rate=0.0,
                 device="cpu",
@@ -84,12 +85,19 @@ class TrainingUtilitiesTest(unittest.TestCase):
             )
 
             output = io.StringIO()
-            with redirect_stdout(output):
-                encoder, decoder, history = fit(
-                    train_loader,
-                    val_loader,
-                    config=config,
-                )
+            with patch("src.train.validate", wraps=validate) as validate_mock:
+                with redirect_stdout(output):
+                    encoder, decoder, history = fit(
+                        train_loader,
+                        val_loader,
+                        config=config,
+                    )
+            first_val_messages = validate_mock.call_args_list[0].kwargs[
+                "fixed_messages"
+            ]
+            second_val_messages = validate_mock.call_args_list[1].kwargs[
+                "fixed_messages"
+            ]
             checkpoint_path = root / "checkpoints" / "smoke" / "last.pt"
             checkpoint = torch.load(
                 checkpoint_path,
@@ -105,24 +113,24 @@ class TrainingUtilitiesTest(unittest.TestCase):
 
             self.assertTrue(checkpoint_path.exists())
 
-        self.assertEqual(history[0]["val_loss"], history[1]["val_loss"])
-        self.assertEqual(encoder.conv1.out_channels, 32)
-        self.assertEqual(decoder.conv3.out_channels, 64)
+        torch.testing.assert_close(first_val_messages, second_val_messages)
+        self.assertEqual(encoder.conv1.out_channels, 24)
+        self.assertEqual(decoder.conv5.out_channels, 32)
         self.assertEqual(checkpoint["config"]["experiment_name"], "smoke")
         self.assertEqual(
             checkpoint["config"]["encoder_channels"],
-            (32, 24, 16),
+            24,
         )
         self.assertEqual(
             checkpoint["config"]["decoder_channels"],
-            (16, 32, 64),
+            32,
         )
         self.assertEqual(checkpoint["config"]["encoder_max_delta"], 0.03)
         self.assertEqual(checkpoint["config"]["attack_configs"], [{"name": "none"}])
         self.assertEqual(len(rows), 2)
         self.assertTrue(all(row["experiment"] == "smoke" for row in rows))
-        self.assertEqual(rows[0]["encoder_channels"], "[32, 24, 16]")
-        self.assertEqual(rows[0]["decoder_channels"], "[16, 32, 64]")
+        self.assertEqual(rows[0]["encoder_channels"], "24")
+        self.assertEqual(rows[0]["decoder_channels"], "32")
         self.assertEqual(rows[0]["encoder_max_delta"], "0.03")
         self.assertGreaterEqual(history[0]["epoch_seconds"], 0.0)
         self.assertIn("Epoch 1/2", output.getvalue())

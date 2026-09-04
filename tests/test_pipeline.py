@@ -13,11 +13,11 @@ class WatermarkPipelineTest(unittest.TestCase):
         decoder = WatermarkDecoder()
 
         images = torch.rand(2, 3, 128, 128)
-        messages = torch.randint(0, 2, (2, 32), dtype=torch.float32)
+        messages = torch.randint(0, 2, (2, 16), dtype=torch.float32)
         masks = torch.ones(2, 1, 128, 128)
 
         watermarked = encoder(images, messages, masks)
-        logits = decoder(watermarked)
+        logits = decoder(watermarked, masks)
 
         loss = nn.BCEWithLogitsLoss()(logits, messages)
         loss.backward()
@@ -33,7 +33,7 @@ class WatermarkPipelineTest(unittest.TestCase):
 
         batch_size = 4
         images = torch.rand(batch_size, 3, 128, 128)
-        messages = torch.randint(0, 2, (batch_size, 32), dtype=torch.float32)
+        messages = torch.randint(0, 2, (batch_size, 16), dtype=torch.float32)
         masks = torch.ones(batch_size, 1, 128, 128)
 
         watermarked = encoder(images, messages, masks)
@@ -41,8 +41,8 @@ class WatermarkPipelineTest(unittest.TestCase):
         self.assertGreaterEqual(watermarked.min().item(), 0.0)
         self.assertLessEqual(watermarked.max().item(), 1.0)
 
-        logits_clean = decoder(watermarked)
-        self.assertEqual(logits_clean.shape, (batch_size, 32))
+        logits_clean = decoder(watermarked, masks)
+        self.assertEqual(logits_clean.shape, (batch_size, 16))
 
         attack_config = {"name": "gaussian_noise", "std": 0.05}
         noisy_watermarked = apply_attack(watermarked, attack_config)
@@ -50,5 +50,17 @@ class WatermarkPipelineTest(unittest.TestCase):
         self.assertGreaterEqual(noisy_watermarked.min().item(), 0.0)
         self.assertLessEqual(noisy_watermarked.max().item(), 1.0)
 
-        logits_noisy = decoder(noisy_watermarked)
-        self.assertEqual(logits_noisy.shape, (batch_size, 32))
+        logits_noisy = decoder(noisy_watermarked, masks)
+        self.assertEqual(logits_noisy.shape, (batch_size, 16))
+
+    def test_model_parameter_budget(self) -> None:
+        encoder = WatermarkEncoder(message_length=16)
+        decoder = WatermarkDecoder(message_length=16)
+
+        total_parameters = sum(
+            parameter.numel()
+            for model in (encoder, decoder)
+            for parameter in model.parameters()
+        )
+
+        self.assertLess(total_parameters, 162_579)

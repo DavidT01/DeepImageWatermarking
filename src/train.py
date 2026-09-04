@@ -26,9 +26,9 @@ class TrainConfig:
     experiment_name: str = "baseline"
     epochs: int = 20
     batch_size: int = 32
-    message_length: int = 32
-    encoder_channels: tuple[int, int, int] = (64, 64, 32)
-    decoder_channels: tuple[int, int, int] = (32, 64, 128)
+    message_length: int = 16
+    encoder_channels: int = 40
+    decoder_channels: int = 40
     encoder_max_delta: float | None = None
     learning_rate: float = 1e-3
     image_loss_weight: float = 1.0
@@ -88,7 +88,7 @@ def _run_batch(encoder: nn.Module, decoder: nn.Module, images: torch.Tensor, mas
     else:
         decoder_input = watermarked
 
-    logits = decoder(decoder_input)
+    logits = decoder(decoder_input, masks)
     message_loss = criterion(logits, messages)
 
     content = masks.expand_as(images).bool()
@@ -110,7 +110,7 @@ def _run_batch(encoder: nn.Module, decoder: nn.Module, images: torch.Tensor, mas
     }
 
 def train_one_epoch(encoder: nn.Module, decoder: nn.Module, loader: Any, optimizer: torch.optim.Optimizer, criterion: nn.Module, device: torch.device,
-                    message_length: int = 32, image_loss_weight: float = 1.0, attack_configs: list[dict[str, Any]] | None = None,
+                    message_length: int = 16, image_loss_weight: float = 1.0, attack_configs: list[dict[str, Any]] | None = None,
                     fixed_messages: torch.Tensor | None = None) -> dict[str, float]:
     """Run one optimization epoch and return averaged batch statistics."""
 
@@ -151,7 +151,7 @@ def train_one_epoch(encoder: nn.Module, decoder: nn.Module, loader: Any, optimiz
     return {name: value / samples for name, value in totals.items()}
 
 @torch.no_grad()
-def validate(encoder: nn.Module, decoder: nn.Module, loader: Any, criterion: nn.Module, device: torch.device, message_length: int = 32,
+def validate(encoder: nn.Module, decoder: nn.Module, loader: Any, criterion: nn.Module, device: torch.device, message_length: int = 16,
              image_loss_weight: float = 1.0, attack_configs: list[dict[str, Any]] | None = None,
              fixed_messages: torch.Tensor | None = None) -> dict[str, float]:
     """Evaluate the pipeline without updating model parameters."""

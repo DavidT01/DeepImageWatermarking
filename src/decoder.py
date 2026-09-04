@@ -9,41 +9,80 @@ class WatermarkDecoder(nn.Module):
 
     def __init__(
         self,
-        message_length: int = 32,
-        feature_channels: tuple[int, int, int] = (32, 64, 128),
+        message_length: int = 16,
+        image_channels: int = 3,
+        feature_channels: int = 40,
     ) -> None:
         super().__init__()
+        self.message_length = message_length
 
-        channels1, channels2, channels3 = feature_channels
-
-        self.conv1 = nn.Conv2d(3, channels1, kernel_size=3, padding=1)
+        self.conv1 = nn.Conv2d(image_channels + 1, feature_channels, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(feature_channels)
         self.relu1 = nn.ReLU()
-        self.pool1 = nn.MaxPool2d(kernel_size=2)
 
-        self.conv2 = nn.Conv2d(channels1, channels2, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(feature_channels, feature_channels, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm2d(feature_channels)
         self.relu2 = nn.ReLU()
-        self.pool2 = nn.MaxPool2d(kernel_size=2)
 
-        self.conv3 = nn.Conv2d(channels2, channels3, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv2d(feature_channels, feature_channels, kernel_size=3, padding=1)
+        self.bn3 = nn.BatchNorm2d(feature_channels)
         self.relu3 = nn.ReLU()
-        self.pool3 = nn.MaxPool2d(kernel_size=2)
 
-        self.fc = nn.Linear(channels3, message_length)
+        self.conv4 = nn.Conv2d(feature_channels, feature_channels, kernel_size=3, padding=1)
+        self.bn4 = nn.BatchNorm2d(feature_channels)
+        self.relu4 = nn.ReLU()
 
-    def forward(self, images: torch.Tensor) -> torch.Tensor:
+        self.conv5 = nn.Conv2d(feature_channels, feature_channels, kernel_size=3, padding=1)
+        self.bn5 = nn.BatchNorm2d(feature_channels)
+        self.relu5 = nn.ReLU()
+
+        self.conv_out = nn.Conv2d(feature_channels, message_length, kernel_size=3, padding=1)
+        self.bn_out = nn.BatchNorm2d(message_length)
+        self.relu_out = nn.ReLU()
+
+        self.fc = nn.Linear(message_length, message_length)
+
+    def _masked_global_average(
+        self,
+        features: torch.Tensor,
+        masks: torch.Tensor,
+    ) -> torch.Tensor:
+        """Average each feature channel over image content only."""
+        content_sum = (features * masks).sum(dim=(2, 3))
+        content_pixels = masks.sum(dim=(2, 3)).clamp_min(1.0)
+        return content_sum / content_pixels
+
+    def forward(
+        self,
+        images: torch.Tensor,
+        masks: torch.Tensor,
+    ) -> torch.Tensor:
         """Return one logit per message bit for each image."""
-        x = self.conv1(images)
+        x = torch.cat([images, masks], dim=1)
+
+        x = self.conv1(x)
+        x = self.bn1(x)
         x = self.relu1(x)
-        x = self.pool1(x)
 
         x = self.conv2(x)
+        x = self.bn2(x)
         x = self.relu2(x)
-        x = self.pool2(x)
 
         x = self.conv3(x)
+        x = self.bn3(x)
         x = self.relu3(x)
-        x = self.pool3(x)
 
-        # Global average pooling
-        x = x.mean(dim=(2, 3))
+        x = self.conv4(x)
+        x = self.bn4(x)
+        x = self.relu4(x)
+
+        x = self.conv5(x)
+        x = self.bn5(x)
+        x = self.relu5(x)
+
+        x = self.conv_out(x)
+        x = self.bn_out(x)
+        x = self.relu_out(x)
+
+        x = self._masked_global_average(x, masks)
         return self.fc(x)

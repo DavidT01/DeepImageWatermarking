@@ -27,8 +27,8 @@ def load_models(
     )
     config = checkpoint["config"].copy()
     config["seed"] = checkpoint.get("seed", SEED)
-    encoder_channels = tuple(config.get("encoder_channels", (64, 64, 32)))
-    decoder_channels = tuple(config.get("decoder_channels", (32, 64, 128)))
+    encoder_channels = config.get("encoder_channels", 40)
+    decoder_channels = config.get("decoder_channels", 40)
 
     encoder = WatermarkEncoder(
         message_length=config["message_length"],
@@ -78,7 +78,7 @@ def evaluate_model(
     loader,
     device: torch.device | str,
     attacks: list[dict] | None = None,
-    message_length: int = 32,
+    message_length: int = 16,
     seed: int = SEED,
     fixed_messages: torch.Tensor | None = None,
 ) -> dict[str, float | int]:
@@ -127,7 +127,7 @@ def evaluate_model(
         for attack in attacks or []:
             decoder_input = apply_attack(decoder_input, attack)
 
-        logits = decoder(decoder_input)
+        logits = decoder(decoder_input, masks)
         predicted_bits = logits_to_bits(logits)
         target_bits = messages.bool()
         content = masks.expand_as(images).bool()
@@ -171,7 +171,7 @@ def evaluate_scenarios(
     loader,
     device: torch.device | str,
     scenarios: dict[str, list[dict]],
-    message_length: int = 32,
+    message_length: int = 16,
     seed: int = SEED,
     fixed_messages: torch.Tensor | None = None,
 ) -> list[dict]:

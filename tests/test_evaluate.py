@@ -27,8 +27,8 @@ class MessageEncoder(nn.Module):
 
 
 class MessageDecoder(nn.Module):
-    def forward(self, images):
-        bits = images[:, 0, 8, :32]
+    def forward(self, images, masks):
+        bits = images[:, 0, 8, :16]
         logits = bits * 20 - 10
         flipped = images[:, 1, 8, 0] > 0.5
         logits[flipped] *= -1
@@ -37,8 +37,8 @@ class MessageDecoder(nn.Module):
 
 class EvaluationUtilitiesTest(unittest.TestCase):
     def test_load_models(self) -> None:
-        encoder_channels = (32, 24, 16)
-        decoder_channels = (16, 32, 64)
+        encoder_channels = 24
+        decoder_channels = 32
         encoder = WatermarkEncoder(
             message_length=8,
             feature_channels=encoder_channels,
@@ -85,8 +85,8 @@ class EvaluationUtilitiesTest(unittest.TestCase):
         self.assertFalse(loaded_decoder.training)
         self.assertEqual(config["message_length"], 8)
         self.assertEqual(loaded_encoder.max_delta, 0.03)
-        self.assertEqual(loaded_encoder.conv3.out_channels, 16)
-        self.assertEqual(loaded_decoder.conv3.out_channels, 64)
+        self.assertEqual(loaded_encoder.conv4.out_channels, 24)
+        self.assertEqual(loaded_decoder.conv5.out_channels, 32)
 
     def test_evaluate_model_is_deterministic_and_ignores_padding(self) -> None:
         images = torch.zeros(3, 3, 32, 32)
