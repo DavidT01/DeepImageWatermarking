@@ -37,6 +37,8 @@ class TrainConfig:
     log_path: str = "results/experiments.csv"
     attack_configs: list[dict[str, Any]] | None = None
     print_every: int = 1
+    checkpoint_metric: str = "loss"
+    target_val_ber: float | None = None
 
 def _select_device(device: str) -> torch.device:
     """Select the configured training device."""
@@ -198,6 +200,7 @@ def save_checkpoint(path: str | Path, encoder: nn.Module, decoder: nn.Module, op
             "decoder_state_dict": decoder.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "best_val_loss": best_val_loss,
+            "best_val_metric": best_val_loss,
             "config": asdict(config),
             "seed": SEED,
             "python_random_state": random.getstate(),
@@ -233,7 +236,11 @@ def load_checkpoint(path: str | Path, encoder: nn.Module, decoder: nn.Module, op
     if cuda_state is not None and torch.cuda.is_available():
         torch.cuda.set_rng_state_all([state.cpu() for state in cuda_state])
 
-    return checkpoint["epoch"] + 1, checkpoint.get("best_val_loss", float("inf"))
+    best_val_metric = checkpoint.get(
+        "best_val_metric",
+        checkpoint.get("best_val_loss", float("inf")),
+    )
+    return checkpoint["epoch"] + 1, best_val_metric
 
 def _append_log(path: str | Path, row: dict[str, Any]) -> None:
     """Append one epoch of training statistics to a CSV log file."""
@@ -268,6 +275,8 @@ def fit(
     config = config or TrainConfig()
     if config.print_every <= 0:
         raise ValueError("print_every must be positive")
+    if config.checkpoint_metric not in {"loss", "ber"}:
+        raise ValueError("checkpoint_metric must be 'loss' or 'ber'")
 
     set_seed()
     device = _select_device(config.device)
@@ -329,9 +338,10 @@ def fit(
             fixed_messages=fixed_val_messages,
         )
 
-        is_best = val_stats["loss"] < best_val_loss
+        current_val_metric = val_stats[config.checkpoint_metric]
+        is_best = current_val_metric < best_val_loss
         if is_best:
-            best_val_loss = val_stats["loss"]
+            best_val_loss = current_val_metric
 
         save_checkpoint(checkpoint_dir / "last.pt", encoder, decoder, optimizer, epoch, best_val_loss, config)
 
@@ -377,6 +387,16 @@ def fit(
                     f" | val_PSNR={val_stats['psnr']:.2f}"
                 )
             print(f"{progress} | {epoch_seconds:.1f}s")
+
+        if (
+            config.target_val_ber is not None
+            and val_stats["ber"] < config.target_val_ber
+        ):
+            print(
+                f"Target validation BER reached: "
+                f"{val_stats['ber']:.4f} < {config.target_val_ber:.4f}"
+            )
+            break
 
     if history:
         training_seconds = perf_counter() - training_start

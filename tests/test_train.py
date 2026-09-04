@@ -32,6 +32,40 @@ class MarkerDecoder(nn.Module):
 
 
 class TrainingUtilitiesTest(unittest.TestCase):
+    def test_fit_stops_at_target_validation_ber(self) -> None:
+        images = torch.rand(2, 3, 16, 16)
+        masks = torch.ones(2, 1, 16, 16)
+        loader = DataLoader(TensorDataset(images, masks), batch_size=2)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = TrainConfig(
+                experiment_name="target-ber",
+                epochs=3,
+                batch_size=2,
+                encoder_channels=8,
+                decoder_channels=8,
+                learning_rate=0.0,
+                device="cpu",
+                checkpoint_dir=str(root / "checkpoints"),
+                log_path=str(root / "experiments.csv"),
+                checkpoint_metric="ber",
+                target_val_ber=1.01,
+            )
+
+            with redirect_stdout(io.StringIO()):
+                _, _, history = fit(loader, loader, config=config)
+
+            checkpoint = torch.load(
+                root / "checkpoints" / "target-ber" / "best_model.pt",
+                map_location="cpu",
+                weights_only=False,
+            )
+
+        self.assertEqual(len(history), 1)
+        self.assertEqual(checkpoint["best_val_metric"], history[0]["val_ber"])
+        self.assertEqual(checkpoint["config"]["checkpoint_metric"], "ber")
+
     def test_log_columns_must_match(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "experiments.csv"
