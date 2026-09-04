@@ -168,9 +168,11 @@ def validate(encoder: nn.Module, decoder: nn.Module, loader: Any, criterion: nn.
     decoder.eval()
     totals: dict[str, float] = {}
     samples = 0
+    validation_attacks = list(attack_configs or [])
+    random.shuffle(validation_attacks)
 
     batch_start = 0
-    for images, masks in loader:
+    for batch_index, (images, masks) in enumerate(loader):
         images = images.to(device)
         masks = masks.to(device)
         batch_size = images.size(0)
@@ -183,7 +185,21 @@ def validate(encoder: nn.Module, decoder: nn.Module, loader: Any, criterion: nn.
         )
         batch_start += batch_size
 
-        values = _run_batch(encoder, decoder, images, masks, messages, criterion, image_loss_weight, attack_configs)
+        batch_attacks = (
+            [validation_attacks[batch_index % len(validation_attacks)]]
+            if validation_attacks
+            else None
+        )
+        values = _run_batch(
+            encoder,
+            decoder,
+            images,
+            masks,
+            messages,
+            criterion,
+            image_loss_weight,
+            batch_attacks,
+        )
 
         samples += batch_size
         for name, value in values.items():

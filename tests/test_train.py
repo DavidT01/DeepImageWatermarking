@@ -39,6 +39,37 @@ class PixelDecoder(nn.Module):
 
 
 class TrainingUtilitiesTest(unittest.TestCase):
+    def test_validation_balances_attack_configs_across_batches(self) -> None:
+        images = torch.zeros(10, 3, 16, 16)
+        masks = torch.ones(10, 1, 16, 16)
+        loader = DataLoader(TensorDataset(images, masks), batch_size=2)
+        attack_names = ["first", "second", "third"]
+        selected_attacks = []
+
+        def record_attack(batch, batch_masks, configs):
+            selected_attacks.append(configs[0]["name"])
+            return batch, batch_masks
+
+        with patch(
+            "src.train.apply_random_attack_with_mask",
+            side_effect=record_attack,
+        ):
+            validate(
+                PaddingOnlyEncoder(),
+                PixelDecoder(),
+                loader,
+                nn.BCEWithLogitsLoss(),
+                torch.device("cpu"),
+                message_length=16,
+                image_loss_weight=0.0,
+                attack_configs=[{"name": name} for name in attack_names],
+                fixed_messages=torch.zeros(10, 16),
+            )
+
+        counts = [selected_attacks.count(name) for name in attack_names]
+        self.assertEqual(len(selected_attacks), len(loader))
+        self.assertLessEqual(max(counts) - min(counts), 1)
+
     def test_robust_validation_is_reproducible_and_preserves_rng(self) -> None:
         images = torch.zeros(2, 3, 16, 16)
         masks = torch.ones(2, 1, 16, 16)
