@@ -1,13 +1,22 @@
 import csv
+import io
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
-from src.train import TrainConfig, fit, load_checkpoint, save_checkpoint, validate
+from src.train import (
+    TrainConfig,
+    _append_log,
+    fit,
+    load_checkpoint,
+    save_checkpoint,
+    validate,
+)
 
 
 class PaddingOnlyEncoder(nn.Module):
@@ -22,6 +31,14 @@ class MarkerDecoder(nn.Module):
 
 
 class TrainingUtilitiesTest(unittest.TestCase):
+    def test_log_columns_must_match(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "experiments.csv"
+            _append_log(path, {"epoch": 1, "loss": 0.5})
+
+            with self.assertRaises(ValueError):
+                _append_log(path, {"epoch": 2, "ber": 0.25})
+
     def test_validation_ignores_padding_and_weights_samples(self) -> None:
         images = torch.zeros(3, 3, 32, 32)
         images[2, 0, 8, 0] = 1
@@ -46,7 +63,9 @@ class TrainingUtilitiesTest(unittest.TestCase):
     def test_fit_uses_stable_validation_and_separate_outputs(self) -> None:
         images = torch.rand(2, 3, 16, 16)
         masks = torch.ones(2, 1, 16, 16)
-        loader = DataLoader(TensorDataset(images, masks), batch_size=2)
+        dataset = TensorDataset(images, masks)
+        train_loader = DataLoader(dataset, batch_size=2)
+        val_loader = DataLoader(dataset, batch_size=2)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -56,6 +75,7 @@ class TrainingUtilitiesTest(unittest.TestCase):
                 batch_size=2,
                 encoder_channels=(32, 24, 16),
                 decoder_channels=(16, 32, 64),
+                encoder_max_delta=0.03,
                 learning_rate=0.0,
                 device="cpu",
                 checkpoint_dir=str(root / "checkpoints"),
@@ -63,7 +83,13 @@ class TrainingUtilitiesTest(unittest.TestCase):
                 attack_configs=[{"name": "none"}],
             )
 
-            encoder, decoder, history = fit(loader, loader, config=config)
+            output = io.StringIO()
+            with redirect_stdout(output):
+                encoder, decoder, history = fit(
+                    train_loader,
+                    val_loader,
+                    config=config,
+                )
             checkpoint_path = root / "checkpoints" / "smoke" / "last.pt"
             checkpoint = torch.load(
                 checkpoint_path,
@@ -91,11 +117,17 @@ class TrainingUtilitiesTest(unittest.TestCase):
             checkpoint["config"]["decoder_channels"],
             (16, 32, 64),
         )
+        self.assertEqual(checkpoint["config"]["encoder_max_delta"], 0.03)
         self.assertEqual(checkpoint["config"]["attack_configs"], [{"name": "none"}])
         self.assertEqual(len(rows), 2)
         self.assertTrue(all(row["experiment"] == "smoke" for row in rows))
         self.assertEqual(rows[0]["encoder_channels"], "[32, 24, 16]")
         self.assertEqual(rows[0]["decoder_channels"], "[16, 32, 64]")
+        self.assertEqual(rows[0]["encoder_max_delta"], "0.03")
+        self.assertGreaterEqual(history[0]["epoch_seconds"], 0.0)
+        self.assertIn("Epoch 1/2", output.getvalue())
+        self.assertIn("val_BER=", output.getvalue())
+        self.assertIn("Training time:", output.getvalue())
 
     def test_checkpoint_restores_random_state(self) -> None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

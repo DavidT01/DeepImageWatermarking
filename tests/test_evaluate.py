@@ -42,6 +42,7 @@ class EvaluationUtilitiesTest(unittest.TestCase):
         encoder = WatermarkEncoder(
             message_length=8,
             feature_channels=encoder_channels,
+            max_delta=0.03,
         )
         decoder = WatermarkDecoder(
             message_length=8,
@@ -64,6 +65,7 @@ class EvaluationUtilitiesTest(unittest.TestCase):
                     message_length=8,
                     encoder_channels=encoder_channels,
                     decoder_channels=decoder_channels,
+                    encoder_max_delta=0.03,
                 ),
             )
             loaded_encoder, loaded_decoder, config = load_models(path, "cpu")
@@ -82,6 +84,7 @@ class EvaluationUtilitiesTest(unittest.TestCase):
         self.assertFalse(loaded_encoder.training)
         self.assertFalse(loaded_decoder.training)
         self.assertEqual(config["message_length"], 8)
+        self.assertEqual(loaded_encoder.max_delta, 0.03)
         self.assertEqual(loaded_encoder.conv3.out_channels, 16)
         self.assertEqual(loaded_decoder.conv3.out_channels, 64)
 

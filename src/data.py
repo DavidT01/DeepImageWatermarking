@@ -54,7 +54,7 @@ class WatermarkDataset(Dataset):
 
         return image, mask
 
-def get_dataloaders(data_dir, splits_file, batch_size=32, num_workers=4):
+def get_dataloaders(data_dir, splits_file, batch_size=32, num_workers=4, shuffle_train=True):
     """
     Instantiates DataLoader classes for training, validation and testing.
     """
@@ -67,7 +67,7 @@ def get_dataloaders(data_dir, splits_file, batch_size=32, num_workers=4):
         try:
             dataset = WatermarkDataset(data_dir, splits_file, split=split)
             
-            shuffle = True if split == 'train' else False
+            shuffle = shuffle_train if split == 'train' else False
             drop_last = True if split == 'train' else False
             
             loader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle,

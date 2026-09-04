@@ -52,6 +52,20 @@ class WatermarkEncoderTest(unittest.TestCase):
 
         self.assertTrue(torch.equal(watermarked[padding], images[padding]))
 
+    def test_residual_is_limited(self) -> None:
+        max_delta = 0.03
+        encoder = WatermarkEncoder(max_delta=max_delta)
+        images = torch.rand(2, 3, 128, 128)
+        messages = torch.randint(0, 2, (2, 32), dtype=torch.float32)
+        masks = torch.ones(2, 1, 128, 128)
+
+        watermarked = encoder(images, messages, masks)
+
+        self.assertLessEqual(
+            (watermarked - images).abs().max().item(),
+            max_delta + 1e-6,
+        )
+
     def test_custom_feature_channels(self) -> None:
         encoder = WatermarkEncoder(feature_channels=(32, 24, 16))
 

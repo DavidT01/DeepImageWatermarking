@@ -10,6 +10,8 @@ __pycache__/
 
 # Downloaded dataset
 /data/raw/
+/data/splits_small.json
 
 # Private working notes
 /internal-docs/
+/results/
