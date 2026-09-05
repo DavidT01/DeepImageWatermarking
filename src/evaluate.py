@@ -30,6 +30,7 @@ def load_models(
         "architecture",
         "advanced" if "conv4.weight" in checkpoint["encoder_state_dict"] else "simple",
     )
+    config.setdefault("simple_version", "legacy")
     for model_name in ("encoder", "decoder"):
         channel_key = f"{model_name}_channels"
         if config.get(channel_key) is None:
@@ -47,6 +48,7 @@ def load_models(
         encoder_max_delta=config.get("encoder_max_delta"),
         decoder_normalization=config.get("decoder_normalization", "batch"),
         decoder_pooling=config.get("decoder_pooling", "max"),
+        simple_version=config["simple_version"],
     )
     config["decoder_normalization"] = model_config.decoder_normalization
     encoder, decoder = build_models(model_config)

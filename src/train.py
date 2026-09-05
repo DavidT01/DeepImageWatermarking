@@ -17,8 +17,8 @@ from src.encoder import WatermarkEncoder
 from src.image_metrics import mean_squared_error, peak_signal_noise_ratio
 from src.message_metrics import bit_error_rate, exact_message_accuracy
 from src.noise import apply_random_attack
-from src.simple_encoder import SimpleWatermarkEncoder
-from src.simple_decoder import SimpleWatermarkDecoder
+from src.simple_encoder import LegacySimpleWatermarkEncoder, SimpleWatermarkEncoder
+from src.simple_decoder import LegacySimpleWatermarkDecoder, SimpleWatermarkDecoder
 from src.utils import SEED, set_seed
 
 @dataclass
@@ -46,6 +46,7 @@ class TrainConfig:
     target_val_ber: float | None = None
     architecture: str = "advanced"
     decoder_pooling: str = "max"
+    simple_version: str = "original"
 
     def __post_init__(self) -> None:
         if self.architecture not in {"advanced", "simple"}:
@@ -61,17 +62,28 @@ class TrainConfig:
 def build_models(config: TrainConfig) -> tuple[nn.Module, nn.Module]:
     """Construct the configured encoder and decoder on CPU."""
     if config.architecture == "simple":
+        if config.simple_version == "original":
+            if config.encoder_channels != (64, 64, 32) or config.decoder_channels != (32, 64, 128):
+                raise ValueError("Original simple models use fixed channel widths")
+            if config.encoder_max_delta is not None or config.decoder_pooling != "max":
+                raise ValueError("Original simple models have no max_delta and use max pooling")
+            return (
+                SimpleWatermarkEncoder(message_length=config.message_length),
+                SimpleWatermarkDecoder(message_length=config.message_length),
+            )
+        if config.simple_version != "legacy":
+            raise ValueError("simple_version must be 'original' or 'legacy'")
         if not isinstance(config.encoder_channels, (tuple, list)) or len(config.encoder_channels) != 3:
             raise ValueError("Simple encoder requires three channel widths")
         if not isinstance(config.decoder_channels, (tuple, list)) or len(config.decoder_channels) != 3:
             raise ValueError("Simple decoder requires three channel widths")
         return (
-            SimpleWatermarkEncoder(
+            LegacySimpleWatermarkEncoder(
                 message_length=config.message_length,
                 feature_channels=tuple(config.encoder_channels),
                 max_delta=config.encoder_max_delta,
             ),
-            SimpleWatermarkDecoder(
+            LegacySimpleWatermarkDecoder(
                 message_length=config.message_length,
                 feature_channels=tuple(config.decoder_channels),
                 pooling=config.decoder_pooling,

@@ -11,8 +11,8 @@ from torch.utils.data import DataLoader, TensorDataset
 from src.decoder import WatermarkDecoder
 from src.encoder import WatermarkEncoder
 from src.evaluate import load_models
-from src.simple_decoder import SimpleWatermarkDecoder
-from src.simple_encoder import SimpleWatermarkEncoder
+from src.simple_decoder import LegacySimpleWatermarkDecoder, SimpleWatermarkDecoder
+from src.simple_encoder import LegacySimpleWatermarkEncoder, SimpleWatermarkEncoder
 from src.train import TrainConfig, build_models, fit, save_checkpoint
 
 
@@ -34,6 +34,49 @@ class ArchitectureSelectionTest(unittest.TestCase):
         self.assertIsInstance(decoder, SimpleWatermarkDecoder)
         self.assertEqual(decoder.fc.out_features, 16)
 
+    def test_original_masking_without_residual_bound(self) -> None:
+        encoder, decoder = build_models(TrainConfig(architecture="simple"))
+        self.assertFalse(hasattr(encoder, "max_delta"))
+        self.assertEqual(SimpleWatermarkEncoder().message_length, 32)
+        self.assertEqual(SimpleWatermarkDecoder().fc.out_features, 32)
+        with torch.no_grad():
+            for parameter in encoder.parameters():
+                parameter.zero_()
+            encoder.conv_out.bias.fill_(0.2)
+            images = torch.full((2, 3, 16, 16), 0.5)
+            masks = torch.zeros(2, 1, 16, 16)
+            masks[:, :, 4:12, :] = 1
+            marked = encoder(images, torch.zeros(2, 16), masks)
+            torch.testing.assert_close(marked, images + 0.2 * masks)
+            self.assertEqual(decoder(marked, masks).shape, (2, 16))
+
+    def test_original_matches_unbounded_legacy_and_roundtrips(self) -> None:
+        config = TrainConfig(architecture="simple")
+        encoder, decoder = build_models(config)
+        legacy_encoder = LegacySimpleWatermarkEncoder(message_length=16, max_delta=None)
+        legacy_decoder = LegacySimpleWatermarkDecoder(message_length=16)
+        legacy_encoder.load_state_dict(encoder.state_dict())
+        legacy_decoder.load_state_dict(decoder.state_dict())
+        images = torch.rand(2, 3, 16, 16)
+        masks = torch.ones(2, 1, 16, 16)
+        masks[:, :, :4, :] = 0
+        messages = torch.zeros(2, 16)
+        with torch.no_grad():
+            marked = encoder(images, messages, masks)
+            torch.testing.assert_close(marked, legacy_encoder(images, messages, masks), rtol=0, atol=0)
+            torch.testing.assert_close(decoder(marked), legacy_decoder(marked), rtol=0, atol=0)
+        optimizer = torch.optim.Adam(list(encoder.parameters()) + list(decoder.parameters()))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "original.pt"
+            save_checkpoint(path, encoder, decoder, optimizer, 0, 0.5, config)
+            restored_encoder, restored_decoder, restored_config = load_models(path, "cpu")
+        self.assertEqual(restored_config["simple_version"], "original")
+        self.assertIsInstance(restored_encoder, SimpleWatermarkEncoder)
+        self.assertIsInstance(restored_decoder, SimpleWatermarkDecoder)
+        with torch.no_grad():
+            torch.testing.assert_close(restored_encoder(images, messages, masks), marked)
+            torch.testing.assert_close(restored_decoder(marked), decoder(marked))
+
     def test_invalid_configuration(self) -> None:
         with self.assertRaises(ValueError):
             TrainConfig(architecture="unknown")
@@ -42,6 +85,9 @@ class ArchitectureSelectionTest(unittest.TestCase):
             TrainConfig(architecture="simple", decoder_channels=(8, 8)),
             TrainConfig(architecture="advanced", encoder_channels=(8, 8, 8)),
             TrainConfig(architecture="simple", decoder_pooling="unknown"),
+            TrainConfig(architecture="simple", encoder_max_delta=0.03),
+            TrainConfig(architecture="simple", decoder_pooling="avg"),
+            TrainConfig(architecture="simple", simple_version="unknown"),
         ):
             with self.subTest(config=config), self.assertRaises(ValueError):
                 build_models(config)
@@ -56,6 +102,7 @@ class ArchitectureSelectionTest(unittest.TestCase):
             with self.subTest(pooling=pooling), tempfile.TemporaryDirectory() as directory:
                 config = TrainConfig(
                     architecture="simple",
+                    simple_version="legacy",
                     decoder_pooling=pooling,
                     encoder_channels=(8, 8, 4),
                     decoder_channels=(4, 8, 8),
@@ -108,6 +155,7 @@ class ArchitectureSelectionTest(unittest.TestCase):
             with self.subTest(architecture=architecture, normalization=normalization, pooling=pooling):
                 config = TrainConfig(
                     architecture=architecture,
+                    simple_version="legacy",
                     encoder_channels=(8, 8, 4) if architecture == "simple" else 8,
                     decoder_channels=(4, 8, 8) if architecture == "simple" else 8,
                     decoder_normalization=normalization,
@@ -121,7 +169,7 @@ class ArchitectureSelectionTest(unittest.TestCase):
                     path = Path(directory) / "legacy.pt"
                     save_checkpoint(path, encoder, decoder, optimizer, 0, 0.5, config)
                     checkpoint = torch.load(path, weights_only=False)
-                    for key in ("architecture", "encoder_channels", "decoder_channels"):
+                    for key in ("architecture", "encoder_channels", "decoder_channels", "simple_version"):
                         del checkpoint["config"][key]
                     torch.save(checkpoint, path)
                     loaded_encoder, loaded_decoder, inferred = load_models(path, "cpu")
