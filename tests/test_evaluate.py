@@ -140,7 +140,7 @@ class EvaluationUtilitiesTest(unittest.TestCase):
             return batch, batch_masks
 
         with patch(
-            "src.evaluate.apply_attack_with_mask",
+            "src.evaluate.apply_attack",
             side_effect=record_attack,
         ):
             results = evaluate_scenarios(

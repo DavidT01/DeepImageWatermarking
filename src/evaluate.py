@@ -10,7 +10,7 @@ from src.decoder import WatermarkDecoder
 from src.encoder import WatermarkEncoder
 from src.image_metrics import mean_squared_error, structural_similarity_index
 from src.message_metrics import logits_to_bits
-from src.noise import apply_attack_with_mask
+from src.noise import apply_attack
 from src.utils import SEED
 
 
@@ -127,7 +127,7 @@ def evaluate_model(
         decoder_input = watermarked
         decoder_masks = masks
         for attack in attacks or []:
-            decoder_input, decoder_masks = apply_attack_with_mask(
+            decoder_input, decoder_masks = apply_attack(
                 decoder_input,
                 decoder_masks,
                 attack,

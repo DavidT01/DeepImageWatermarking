@@ -84,7 +84,7 @@ class TrainingUtilitiesTest(unittest.TestCase):
             return batch, batch_masks
 
         with patch(
-            "src.train.apply_random_attack_with_mask",
+            "src.train.apply_random_attack",
             side_effect=record_attack,
         ):
             validate(

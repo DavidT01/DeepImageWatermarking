@@ -45,12 +45,12 @@ class WatermarkPipelineTest(unittest.TestCase):
         self.assertEqual(logits_clean.shape, (batch_size, 16))
 
         attack_config = {"name": "gaussian_noise", "std": 0.05}
-        noisy_watermarked = apply_attack(watermarked, attack_config)
+        noisy_watermarked, decoder_masks = apply_attack(watermarked, masks, attack_config)
         self.assertEqual(noisy_watermarked.shape, (batch_size, 3, 128, 128))
         self.assertGreaterEqual(noisy_watermarked.min().item(), 0.0)
         self.assertLessEqual(noisy_watermarked.max().item(), 1.0)
 
-        logits_noisy = decoder(noisy_watermarked, masks)
+        logits_noisy = decoder(noisy_watermarked, decoder_masks)
         self.assertEqual(logits_noisy.shape, (batch_size, 16))
 
     def test_model_parameter_budget(self) -> None:

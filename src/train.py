@@ -16,7 +16,7 @@ from src.decoder import WatermarkDecoder
 from src.encoder import WatermarkEncoder
 from src.image_metrics import mean_squared_error, peak_signal_noise_ratio
 from src.message_metrics import bit_error_rate, exact_message_accuracy
-from src.noise import apply_random_attack_with_mask
+from src.noise import apply_random_attack
 from src.utils import SEED, set_seed
 
 @dataclass
@@ -89,7 +89,7 @@ def _run_batch(encoder: nn.Module, decoder: nn.Module, images: torch.Tensor, mas
     watermarked = encoder(images, messages, masks)
 
     if attack_configs:
-        decoder_input, decoder_masks = apply_random_attack_with_mask(
+        decoder_input, decoder_masks = apply_random_attack(
             watermarked,
             masks,
             attack_configs,
