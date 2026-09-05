@@ -38,6 +38,7 @@ def load_models(
     decoder = WatermarkDecoder(
         message_length=config["message_length"],
         feature_channels=decoder_channels,
+        normalization=config.get("decoder_normalization", "batch"),
     ).to(device)
 
     encoder.load_state_dict(checkpoint["encoder_state_dict"])

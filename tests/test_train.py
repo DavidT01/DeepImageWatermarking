@@ -39,6 +39,39 @@ class PixelDecoder(nn.Module):
 
 
 class TrainingUtilitiesTest(unittest.TestCase):
+    def test_fit_can_freeze_encoder_and_remove_decoder_normalization(self) -> None:
+        images = torch.rand(2, 3, 16, 16)
+        masks = torch.ones(2, 1, 16, 16)
+        loader = DataLoader(TensorDataset(images, masks), batch_size=2)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = TrainConfig(
+                experiment_name="decoder-finetune",
+                epochs=1,
+                batch_size=2,
+                encoder_channels=8,
+                decoder_channels=8,
+                decoder_normalization="none",
+                freeze_encoder=True,
+                device="cpu",
+                checkpoint_dir=str(root / "checkpoints"),
+                log_path=str(root / "experiments.csv"),
+            )
+
+            with redirect_stdout(io.StringIO()):
+                encoder, decoder, history = fit(
+                    loader,
+                    loader,
+                    config=config,
+                )
+
+        self.assertEqual(len(history), 1)
+        self.assertFalse(any(parameter.requires_grad for parameter in encoder.parameters()))
+        self.assertFalse(
+            any(isinstance(module, nn.BatchNorm2d) for module in decoder.modules())
+        )
+
     def test_validation_balances_attack_configs_across_batches(self) -> None:
         images = torch.zeros(10, 3, 16, 16)
         masks = torch.ones(10, 1, 16, 16)

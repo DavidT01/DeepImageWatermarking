@@ -57,3 +57,28 @@ class WatermarkDecoderTest(unittest.TestCase):
         pooled = decoder._masked_global_average(features, masks)
 
         torch.testing.assert_close(pooled, torch.tensor([[2.0, 3.0]]))
+
+    def test_fused_batch_norm_preserves_evaluation_output(self) -> None:
+        decoder = WatermarkDecoder().eval()
+        images = torch.rand(2, 3, 32, 32)
+        masks = torch.ones(2, 1, 32, 32)
+
+        with torch.no_grad():
+            expected = decoder(images, masks)
+            decoder.fuse_batch_norm()
+            actual = decoder(images, masks)
+
+        torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
+        self.assertFalse(
+            any(isinstance(module, nn.BatchNorm2d) for module in decoder.modules())
+        )
+
+    def test_decoder_without_normalization(self) -> None:
+        decoder = WatermarkDecoder(normalization="none")
+        images = torch.rand(2, 3, 32, 32)
+        masks = torch.ones(2, 1, 32, 32)
+
+        self.assertEqual(decoder(images, masks).shape, (2, 16))
+        self.assertFalse(
+            any(isinstance(module, nn.BatchNorm2d) for module in decoder.modules())
+        )

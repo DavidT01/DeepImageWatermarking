@@ -29,6 +29,8 @@ class TrainConfig:
     message_length: int = 16
     encoder_channels: int = 40
     decoder_channels: int = 40
+    decoder_normalization: str = "batch"
+    freeze_encoder: bool = False
     encoder_max_delta: float | None = None
     learning_rate: float = 1e-3
     image_loss_weight: float = 1.0
@@ -122,7 +124,10 @@ def train_one_epoch(encoder: nn.Module, decoder: nn.Module, loader: Any, optimiz
                     fixed_messages: torch.Tensor | None = None) -> dict[str, float]:
     """Run one optimization epoch and return averaged batch statistics."""
 
-    encoder.train()
+    if any(parameter.requires_grad for parameter in encoder.parameters()):
+        encoder.train()
+    else:
+        encoder.eval()
     decoder.train()
     totals: dict[str, float] = {}
     samples = 0
@@ -354,8 +359,21 @@ def fit(
     decoder = WatermarkDecoder(
         message_length=config.message_length,
         feature_channels=config.decoder_channels,
+        normalization=config.decoder_normalization,
     ).to(device)
-    optimizer = torch.optim.Adam(list(encoder.parameters()) + list(decoder.parameters()), lr=config.learning_rate)
+    if config.freeze_encoder:
+        encoder.requires_grad_(False)
+
+    trainable_parameters = [
+        parameter
+        for model in (encoder, decoder)
+        for parameter in model.parameters()
+        if parameter.requires_grad
+    ]
+    optimizer = torch.optim.Adam(
+        trainable_parameters,
+        lr=config.learning_rate,
+    )
     criterion = nn.BCEWithLogitsLoss()
     start_epoch = 0
     best_val_loss = float("inf")
@@ -425,6 +443,8 @@ def fit(
             "batch_size": config.batch_size,
             "encoder_channels": json.dumps(config.encoder_channels),
             "decoder_channels": json.dumps(config.decoder_channels),
+            "decoder_normalization": config.decoder_normalization,
+            "freeze_encoder": config.freeze_encoder,
             "encoder_max_delta": config.encoder_max_delta,
             "image_loss_weight": config.image_loss_weight,
             "attack_configs": json.dumps(config.attack_configs),
