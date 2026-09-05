@@ -17,6 +17,8 @@ from src.encoder import WatermarkEncoder
 from src.image_metrics import mean_squared_error, peak_signal_noise_ratio
 from src.message_metrics import bit_error_rate, exact_message_accuracy
 from src.noise import apply_random_attack
+from src.simple_encoder import LegacySimpleWatermarkEncoder, SimpleWatermarkEncoder
+from src.simple_decoder import LegacySimpleWatermarkDecoder, SimpleWatermarkDecoder
 from src.utils import SEED, set_seed
 
 @dataclass
@@ -26,9 +28,11 @@ class TrainConfig:
     experiment_name: str = "baseline"
     epochs: int = 20
     batch_size: int = 32
-    message_length: int = 32
-    encoder_channels: tuple[int, int, int] = (64, 64, 32)
-    decoder_channels: tuple[int, int, int] = (32, 64, 128)
+    message_length: int = 16
+    encoder_channels: int | tuple[int, int, int] | None = None
+    decoder_channels: int | tuple[int, int, int] | None = None
+    decoder_normalization: str = "batch"
+    freeze_encoder: bool = False
     encoder_max_delta: float | None = None
     learning_rate: float = 1e-3
     image_loss_weight: float = 1.0
@@ -36,7 +40,71 @@ class TrainConfig:
     checkpoint_dir: str = "results/checkpoints"
     log_path: str = "results/experiments.csv"
     attack_configs: list[dict[str, Any]] | None = None
+    validation_attack_configs: list[dict[str, Any]] | None = None
     print_every: int = 1
+    checkpoint_metric: str = "loss"
+    target_val_ber: float | None = None
+    architecture: str = "advanced"
+    decoder_pooling: str = "max"
+    simple_version: str = "original"
+
+    def __post_init__(self) -> None:
+        if self.architecture not in {"advanced", "simple"}:
+            raise ValueError("architecture must be 'advanced' or 'simple'")
+        if self.encoder_channels is None:
+            self.encoder_channels = (64, 64, 32) if self.architecture == "simple" else 40
+        if self.decoder_channels is None:
+            self.decoder_channels = (32, 64, 128) if self.architecture == "simple" else 40
+        if self.architecture == "simple":
+            self.decoder_normalization = "none"
+
+
+def build_models(config: TrainConfig) -> tuple[nn.Module, nn.Module]:
+    """Construct the configured encoder and decoder on CPU."""
+    if config.architecture == "simple":
+        if config.simple_version == "original":
+            if config.encoder_channels != (64, 64, 32) or config.decoder_channels != (32, 64, 128):
+                raise ValueError("Original simple models use fixed channel widths")
+            if config.encoder_max_delta is not None or config.decoder_pooling != "max":
+                raise ValueError("Original simple models have no max_delta and use max pooling")
+            return (
+                SimpleWatermarkEncoder(message_length=config.message_length),
+                SimpleWatermarkDecoder(message_length=config.message_length),
+            )
+        if config.simple_version != "legacy":
+            raise ValueError("simple_version must be 'original' or 'legacy'")
+        if not isinstance(config.encoder_channels, (tuple, list)) or len(config.encoder_channels) != 3:
+            raise ValueError("Simple encoder requires three channel widths")
+        if not isinstance(config.decoder_channels, (tuple, list)) or len(config.decoder_channels) != 3:
+            raise ValueError("Simple decoder requires three channel widths")
+        return (
+            LegacySimpleWatermarkEncoder(
+                message_length=config.message_length,
+                feature_channels=tuple(config.encoder_channels),
+                max_delta=config.encoder_max_delta,
+            ),
+            LegacySimpleWatermarkDecoder(
+                message_length=config.message_length,
+                feature_channels=tuple(config.decoder_channels),
+                pooling=config.decoder_pooling,
+            ),
+        )
+    if config.architecture != "advanced":
+        raise ValueError("architecture must be 'advanced' or 'simple'")
+    if not isinstance(config.encoder_channels, int) or not isinstance(config.decoder_channels, int):
+        raise ValueError("Advanced architecture requires integer channel widths")
+    return (
+        WatermarkEncoder(
+            message_length=config.message_length,
+            feature_channels=config.encoder_channels,
+            max_delta=config.encoder_max_delta,
+        ),
+        WatermarkDecoder(
+            message_length=config.message_length,
+            feature_channels=config.decoder_channels,
+            normalization=config.decoder_normalization,
+        ),
+    )
 
 def _select_device(device: str) -> torch.device:
     """Select the configured training device."""
@@ -84,11 +152,16 @@ def _run_batch(encoder: nn.Module, decoder: nn.Module, images: torch.Tensor, mas
     watermarked = encoder(images, messages, masks)
 
     if attack_configs:
-        decoder_input = apply_random_attack(watermarked, attack_configs)
+        decoder_input, decoder_masks = apply_random_attack(
+            watermarked,
+            masks,
+            attack_configs,
+        )
     else:
         decoder_input = watermarked
+        decoder_masks = masks
 
-    logits = decoder(decoder_input)
+    logits = decoder(decoder_input, decoder_masks)
     message_loss = criterion(logits, messages)
 
     content = masks.expand_as(images).bool()
@@ -110,11 +183,14 @@ def _run_batch(encoder: nn.Module, decoder: nn.Module, images: torch.Tensor, mas
     }
 
 def train_one_epoch(encoder: nn.Module, decoder: nn.Module, loader: Any, optimizer: torch.optim.Optimizer, criterion: nn.Module, device: torch.device,
-                    message_length: int = 32, image_loss_weight: float = 1.0, attack_configs: list[dict[str, Any]] | None = None,
+                    message_length: int = 16, image_loss_weight: float = 1.0, attack_configs: list[dict[str, Any]] | None = None,
                     fixed_messages: torch.Tensor | None = None) -> dict[str, float]:
     """Run one optimization epoch and return averaged batch statistics."""
 
-    encoder.train()
+    if any(parameter.requires_grad for parameter in encoder.parameters()):
+        encoder.train()
+    else:
+        encoder.eval()
     decoder.train()
     totals: dict[str, float] = {}
     samples = 0
@@ -151,7 +227,7 @@ def train_one_epoch(encoder: nn.Module, decoder: nn.Module, loader: Any, optimiz
     return {name: value / samples for name, value in totals.items()}
 
 @torch.no_grad()
-def validate(encoder: nn.Module, decoder: nn.Module, loader: Any, criterion: nn.Module, device: torch.device, message_length: int = 32,
+def validate(encoder: nn.Module, decoder: nn.Module, loader: Any, criterion: nn.Module, device: torch.device, message_length: int = 16,
              image_loss_weight: float = 1.0, attack_configs: list[dict[str, Any]] | None = None,
              fixed_messages: torch.Tensor | None = None) -> dict[str, float]:
     """Evaluate the pipeline without updating model parameters."""
@@ -160,9 +236,11 @@ def validate(encoder: nn.Module, decoder: nn.Module, loader: Any, criterion: nn.
     decoder.eval()
     totals: dict[str, float] = {}
     samples = 0
+    validation_attacks = list(attack_configs or [])
+    random.shuffle(validation_attacks)
 
     batch_start = 0
-    for images, masks in loader:
+    for batch_index, (images, masks) in enumerate(loader):
         images = images.to(device)
         masks = masks.to(device)
         batch_size = images.size(0)
@@ -175,7 +253,21 @@ def validate(encoder: nn.Module, decoder: nn.Module, loader: Any, criterion: nn.
         )
         batch_start += batch_size
 
-        values = _run_batch(encoder, decoder, images, masks, messages, criterion, image_loss_weight, attack_configs)
+        batch_attacks = (
+            [validation_attacks[batch_index % len(validation_attacks)]]
+            if validation_attacks
+            else None
+        )
+        values = _run_batch(
+            encoder,
+            decoder,
+            images,
+            masks,
+            messages,
+            criterion,
+            image_loss_weight,
+            batch_attacks,
+        )
 
         samples += batch_size
         for name, value in values.items():
@@ -185,6 +277,50 @@ def validate(encoder: nn.Module, decoder: nn.Module, loader: Any, criterion: nn.
         raise ValueError("The validation loader is empty")
 
     return {name: value / samples for name, value in totals.items()}
+
+
+def _validate_reproducibly(
+    encoder: nn.Module,
+    decoder: nn.Module,
+    loader: Any,
+    criterion: nn.Module,
+    device: torch.device,
+    message_length: int,
+    image_loss_weight: float,
+    attack_configs: list[dict[str, Any]] | None,
+    fixed_messages: torch.Tensor,
+) -> dict[str, float]:
+    """Validate with fixed attack randomness without changing training RNG."""
+    python_state = random.getstate()
+    torch_state = torch.get_rng_state()
+    cuda_state = (
+        torch.cuda.get_rng_state_all()
+        if torch.cuda.is_available()
+        else None
+    )
+
+    random.seed(SEED)
+    torch.manual_seed(SEED)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(SEED)
+
+    try:
+        return validate(
+            encoder=encoder,
+            decoder=decoder,
+            loader=loader,
+            criterion=criterion,
+            device=device,
+            message_length=message_length,
+            image_loss_weight=image_loss_weight,
+            attack_configs=attack_configs,
+            fixed_messages=fixed_messages,
+        )
+    finally:
+        random.setstate(python_state)
+        torch.set_rng_state(torch_state)
+        if cuda_state is not None:
+            torch.cuda.set_rng_state_all(cuda_state)
 
 def save_checkpoint(path: str | Path, encoder: nn.Module, decoder: nn.Module, optimizer: torch.optim.Optimizer, epoch: int,
                     best_val_loss: float, config: TrainConfig) -> None:
@@ -198,6 +334,7 @@ def save_checkpoint(path: str | Path, encoder: nn.Module, decoder: nn.Module, op
             "decoder_state_dict": decoder.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "best_val_loss": best_val_loss,
+            "best_val_metric": best_val_loss,
             "config": asdict(config),
             "seed": SEED,
             "python_random_state": random.getstate(),
@@ -233,7 +370,11 @@ def load_checkpoint(path: str | Path, encoder: nn.Module, decoder: nn.Module, op
     if cuda_state is not None and torch.cuda.is_available():
         torch.cuda.set_rng_state_all([state.cpu() for state in cuda_state])
 
-    return checkpoint["epoch"] + 1, checkpoint.get("best_val_loss", float("inf"))
+    best_val_metric = checkpoint.get(
+        "best_val_metric",
+        checkpoint.get("best_val_loss", float("inf")),
+    )
+    return checkpoint["epoch"] + 1, best_val_metric
 
 def _append_log(path: str | Path, row: dict[str, Any]) -> None:
     """Append one epoch of training statistics to a CSV log file."""
@@ -268,19 +409,27 @@ def fit(
     config = config or TrainConfig()
     if config.print_every <= 0:
         raise ValueError("print_every must be positive")
+    if config.checkpoint_metric not in {"loss", "ber"}:
+        raise ValueError("checkpoint_metric must be 'loss' or 'ber'")
 
     set_seed()
     device = _select_device(config.device)
-    encoder = WatermarkEncoder(
-        message_length=config.message_length,
-        feature_channels=config.encoder_channels,
-        max_delta=config.encoder_max_delta,
-    ).to(device)
-    decoder = WatermarkDecoder(
-        message_length=config.message_length,
-        feature_channels=config.decoder_channels,
-    ).to(device)
-    optimizer = torch.optim.Adam(list(encoder.parameters()) + list(decoder.parameters()), lr=config.learning_rate)
+    encoder, decoder = build_models(config)
+    encoder.to(device)
+    decoder.to(device)
+    if config.freeze_encoder:
+        encoder.requires_grad_(False)
+
+    trainable_parameters = [
+        parameter
+        for model in (encoder, decoder)
+        for parameter in model.parameters()
+        if parameter.requires_grad
+    ]
+    optimizer = torch.optim.Adam(
+        trainable_parameters,
+        lr=config.learning_rate,
+    )
     criterion = nn.BCEWithLogitsLoss()
     start_epoch = 0
     best_val_loss = float("inf")
@@ -297,6 +446,8 @@ def fit(
 
     if resume_from is not None:
         start_epoch, best_val_loss = load_checkpoint(resume_from, encoder, decoder, optimizer, device)
+        for parameter_group in optimizer.param_groups:
+            parameter_group["lr"] = config.learning_rate
 
     history: list[dict[str, Any]] = []
     checkpoint_dir = Path(config.checkpoint_dir) / config.experiment_name
@@ -317,7 +468,7 @@ def fit(
             attack_configs=config.attack_configs,
             fixed_messages=fixed_train_messages,
         )
-        val_stats = validate(
+        val_stats = _validate_reproducibly(
             encoder=encoder,
             decoder=decoder,
             loader=val_loader,
@@ -325,13 +476,14 @@ def fit(
             device=device,
             message_length=config.message_length,
             image_loss_weight=config.image_loss_weight,
-            attack_configs=None,
+            attack_configs=config.validation_attack_configs,
             fixed_messages=fixed_val_messages,
         )
 
-        is_best = val_stats["loss"] < best_val_loss
+        current_val_metric = val_stats[config.checkpoint_metric]
+        is_best = current_val_metric < best_val_loss
         if is_best:
-            best_val_loss = val_stats["loss"]
+            best_val_loss = current_val_metric
 
         save_checkpoint(checkpoint_dir / "last.pt", encoder, decoder, optimizer, epoch, best_val_loss, config)
 
@@ -347,11 +499,17 @@ def fit(
             "batch_size": config.batch_size,
             "encoder_channels": json.dumps(config.encoder_channels),
             "decoder_channels": json.dumps(config.decoder_channels),
+            "decoder_normalization": config.decoder_normalization,
+            "freeze_encoder": config.freeze_encoder,
             "encoder_max_delta": config.encoder_max_delta,
             "image_loss_weight": config.image_loss_weight,
             "attack_configs": json.dumps(config.attack_configs),
             "epoch_seconds": epoch_seconds,
         }
+        if config.validation_attack_configs is not None:
+            row["validation_attack_configs"] = json.dumps(
+                config.validation_attack_configs
+            )
         row.update({f"train_{name}": value for name, value in train_stats.items()})
         row.update({f"val_{name}": value for name, value in val_stats.items()})
         history.append(row)
@@ -377,6 +535,16 @@ def fit(
                     f" | val_PSNR={val_stats['psnr']:.2f}"
                 )
             print(f"{progress} | {epoch_seconds:.1f}s")
+
+        if (
+            config.target_val_ber is not None
+            and val_stats["ber"] < config.target_val_ber
+        ):
+            print(
+                f"Target validation BER reached: "
+                f"{val_stats['ber']:.4f} < {config.target_val_ber:.4f}"
+            )
+            break
 
     if history:
         training_seconds = perf_counter() - training_start

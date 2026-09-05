@@ -8,9 +8,9 @@ class WatermarkEncoder(nn.Module):
 
     def __init__(
         self,
-        message_length: int = 32,
+        message_length: int = 16,
         image_channels: int = 3,
-        feature_channels: tuple[int, int, int] = (64, 64, 32),
+        feature_channels: int = 40,
         max_delta: float | None = None,
     ) -> None:
         super().__init__()
@@ -18,23 +18,31 @@ class WatermarkEncoder(nn.Module):
         self.image_channels = image_channels
         self.max_delta = max_delta
 
-        in_channels = image_channels + message_length
-        channels1, channels2, channels3 = feature_channels
-
-        self.conv1 = nn.Conv2d(in_channels, channels1, kernel_size=3, padding=1)
+        self.conv1 = nn.Conv2d(image_channels, feature_channels, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(feature_channels)
         self.relu1 = nn.ReLU()
 
-        self.conv2 = nn.Conv2d(channels1, channels2, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(feature_channels, feature_channels, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm2d(feature_channels)
         self.relu2 = nn.ReLU()
 
-        self.conv3 = nn.Conv2d(channels2, channels3, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv2d(feature_channels, feature_channels, kernel_size=3, padding=1)
+        self.bn3 = nn.BatchNorm2d(feature_channels)
         self.relu3 = nn.ReLU()
 
+        self.conv4 = nn.Conv2d(feature_channels, feature_channels, kernel_size=3, padding=1)
+        self.bn4 = nn.BatchNorm2d(feature_channels)
+        self.relu4 = nn.ReLU()
+
+        fusion_channels = feature_channels + message_length + image_channels + 1
+        self.conv5 = nn.Conv2d(fusion_channels, feature_channels, kernel_size=3, padding=1)
+        self.bn5 = nn.BatchNorm2d(feature_channels)
+        self.relu5 = nn.ReLU()
+
         self.conv_out = nn.Conv2d(
-            channels3,
+            feature_channels,
             image_channels,
-            kernel_size=3,
-            padding=1,
+            kernel_size=1,
         )
 
     def forward(
@@ -57,16 +65,26 @@ class WatermarkEncoder(nn.Module):
 
         expanded_messages = messages.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, height, width)
 
-        x = torch.cat([images, expanded_messages], dim=1)
-
-        x = self.conv1(x)
+        x = self.conv1(images)
+        x = self.bn1(x)
         x = self.relu1(x)
 
         x = self.conv2(x)
+        x = self.bn2(x)
         x = self.relu2(x)
 
         x = self.conv3(x)
+        x = self.bn3(x)
         x = self.relu3(x)
+
+        x = self.conv4(x)
+        x = self.bn4(x)
+        x = self.relu4(x)
+
+        x = torch.cat([x, expanded_messages, images, masks], dim=1)
+        x = self.conv5(x)
+        x = self.bn5(x)
+        x = self.relu5(x)
 
         residual = self.conv_out(x)
         if self.max_delta is not None:

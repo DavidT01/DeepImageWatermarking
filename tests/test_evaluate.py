@@ -1,3 +1,4 @@
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -27,18 +28,51 @@ class MessageEncoder(nn.Module):
 
 
 class MessageDecoder(nn.Module):
-    def forward(self, images):
-        bits = images[:, 0, 8, :32]
+    def forward(self, images, masks):
+        bits = images[:, 0, 8, :16]
         logits = bits * 20 - 10
         flipped = images[:, 1, 8, 0] > 0.5
         logits[flipped] *= -1
         return logits
 
 
+class ContentOffsetEncoder(nn.Module):
+    def forward(self, images, messages, masks):
+        return images + images[:, :1, :1, :1] * masks
+
+
 class EvaluationUtilitiesTest(unittest.TestCase):
+    def test_global_metrics_ignore_batch_partition_and_attack_distortion(self) -> None:
+        images = torch.tensor([0.1, 0.2, 0.3]).view(3, 1, 1, 1).expand(3, 3, 32, 32)
+        masks = torch.zeros(3, 1, 32, 32)
+        for index, height in enumerate((8, 16, 24)):
+            masks[index, :, :height, :] = 1
+        dataset = TensorDataset(images, masks)
+        expected_mse = (0.01 * 8 + 0.04 * 16 + 0.09 * 24) / (8 + 16 + 24)
+        results = []
+        for batch_size in (1, 2, 3):
+            with self.subTest(batch_size=batch_size):
+                metrics = evaluate_model(
+                    ContentOffsetEncoder(), MessageDecoder(),
+                    DataLoader(dataset, batch_size=batch_size), "cpu",
+                )
+                self.assertAlmostEqual(metrics["mse"], expected_mse, places=7)
+                self.assertAlmostEqual(metrics["psnr"], 10 * math.log10(1 / expected_mse), places=5)
+                results.append(metrics)
+        for metrics in results[1:]:
+            for key in results[0]:
+                self.assertAlmostEqual(metrics[key], results[0][key], places=5)
+
+        attacked = evaluate_model(
+            ContentOffsetEncoder(), MessageDecoder(), DataLoader(dataset, batch_size=2),
+            "cpu", attacks=[{"name": "gaussian_noise", "std": 0.1}],
+        )
+        for key in ("mse", "psnr", "ssim"):
+            self.assertEqual(attacked[key], results[1][key])
+
     def test_load_models(self) -> None:
-        encoder_channels = (32, 24, 16)
-        decoder_channels = (16, 32, 64)
+        encoder_channels = 24
+        decoder_channels = 32
         encoder = WatermarkEncoder(
             message_length=8,
             feature_channels=encoder_channels,
@@ -85,8 +119,8 @@ class EvaluationUtilitiesTest(unittest.TestCase):
         self.assertFalse(loaded_decoder.training)
         self.assertEqual(config["message_length"], 8)
         self.assertEqual(loaded_encoder.max_delta, 0.03)
-        self.assertEqual(loaded_encoder.conv3.out_channels, 16)
-        self.assertEqual(loaded_decoder.conv3.out_channels, 64)
+        self.assertEqual(loaded_encoder.conv4.out_channels, 24)
+        self.assertEqual(loaded_decoder.conv5.out_channels, 32)
 
     def test_evaluate_model_is_deterministic_and_ignores_padding(self) -> None:
         images = torch.zeros(3, 3, 32, 32)
@@ -135,11 +169,14 @@ class EvaluationUtilitiesTest(unittest.TestCase):
             ],
         }
 
-        def record_attack(batch, config):
+        def record_attack(batch, batch_masks, config):
             applied_attacks.append(config["name"])
-            return batch
+            return batch, batch_masks
 
-        with patch("src.evaluate.apply_attack", side_effect=record_attack):
+        with patch(
+            "src.evaluate.apply_attack",
+            side_effect=record_attack,
+        ):
             results = evaluate_scenarios(
                 MessageEncoder(),
                 MessageDecoder(),

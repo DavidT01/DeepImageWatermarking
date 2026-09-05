@@ -6,18 +6,17 @@ from pathlib import Path
 import torch
 from torch import nn
 
-from src.decoder import WatermarkDecoder
-from src.encoder import WatermarkEncoder
 from src.image_metrics import mean_squared_error, structural_similarity_index
 from src.message_metrics import logits_to_bits
 from src.noise import apply_attack
+from src.train import TrainConfig, build_models
 from src.utils import SEED
 
 
 def load_models(
     checkpoint_path: str | Path,
     device: torch.device | str,
-) -> tuple[WatermarkEncoder, WatermarkDecoder, dict]:
+) -> tuple[nn.Module, nn.Module, dict]:
     """Load an encoder-decoder pair from a training checkpoint."""
     device = torch.device(device)
     checkpoint = torch.load(
@@ -27,18 +26,34 @@ def load_models(
     )
     config = checkpoint["config"].copy()
     config["seed"] = checkpoint.get("seed", SEED)
-    encoder_channels = tuple(config.get("encoder_channels", (64, 64, 32)))
-    decoder_channels = tuple(config.get("decoder_channels", (32, 64, 128)))
-
-    encoder = WatermarkEncoder(
+    config.setdefault(
+        "architecture",
+        "advanced" if "conv4.weight" in checkpoint["encoder_state_dict"] else "simple",
+    )
+    config.setdefault("simple_version", "legacy")
+    for model_name in ("encoder", "decoder"):
+        channel_key = f"{model_name}_channels"
+        if config.get(channel_key) is None:
+            weights = checkpoint[f"{model_name}_state_dict"]
+            config[channel_key] = (
+                tuple(weights[f"conv{index}.weight"].shape[0] for index in (1, 2, 3))
+                if config["architecture"] == "simple"
+                else weights["conv1.weight"].shape[0]
+            )
+    model_config = TrainConfig(
+        architecture=config["architecture"],
         message_length=config["message_length"],
-        feature_channels=encoder_channels,
-        max_delta=config.get("encoder_max_delta"),
-    ).to(device)
-    decoder = WatermarkDecoder(
-        message_length=config["message_length"],
-        feature_channels=decoder_channels,
-    ).to(device)
+        encoder_channels=config["encoder_channels"],
+        decoder_channels=config["decoder_channels"],
+        encoder_max_delta=config.get("encoder_max_delta"),
+        decoder_normalization=config.get("decoder_normalization", "batch"),
+        decoder_pooling=config.get("decoder_pooling", "max"),
+        simple_version=config["simple_version"],
+    )
+    config["decoder_normalization"] = model_config.decoder_normalization
+    encoder, decoder = build_models(model_config)
+    encoder.to(device)
+    decoder.to(device)
 
     encoder.load_state_dict(checkpoint["encoder_state_dict"])
     decoder.load_state_dict(checkpoint["decoder_state_dict"])
@@ -78,7 +93,7 @@ def evaluate_model(
     loader,
     device: torch.device | str,
     attacks: list[dict] | None = None,
-    message_length: int = 32,
+    message_length: int = 16,
     seed: int = SEED,
     fixed_messages: torch.Tensor | None = None,
 ) -> dict[str, float | int]:
@@ -124,10 +139,15 @@ def evaluate_model(
 
         watermarked = encoder(images, messages, masks)
         decoder_input = watermarked
+        decoder_masks = masks
         for attack in attacks or []:
-            decoder_input = apply_attack(decoder_input, attack)
+            decoder_input, decoder_masks = apply_attack(
+                decoder_input,
+                decoder_masks,
+                attack,
+            )
 
-        logits = decoder(decoder_input)
+        logits = decoder(decoder_input, decoder_masks)
         predicted_bits = logits_to_bits(logits)
         target_bits = messages.bool()
         content = masks.expand_as(images).bool()
@@ -171,7 +191,7 @@ def evaluate_scenarios(
     loader,
     device: torch.device | str,
     scenarios: dict[str, list[dict]],
-    message_length: int = 32,
+    message_length: int = 16,
     seed: int = SEED,
     fixed_messages: torch.Tensor | None = None,
 ) -> list[dict]:

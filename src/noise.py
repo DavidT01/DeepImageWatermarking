@@ -57,28 +57,43 @@ def rotation(images: torch.Tensor, angle: float) -> torch.Tensor:
     return rotated.clamp(0, 1)
 
 
-def apply_attack(images: torch.Tensor, config: dict) -> torch.Tensor:
-    """Apply the attack described by a configuration dictionary."""
+def apply_attack(
+    images: torch.Tensor,
+    masks: torch.Tensor,
+    config: dict,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Apply one attack and keep the content mask aligned with the image."""
     name = config["name"]
 
     if name == "none":
-        return images
+        return images, masks
     if name == "gaussian_noise":
-        return gaussian_noise(images, std=config["std"])
+        return gaussian_noise(images, std=config["std"]), masks
     if name == "gaussian_blur":
         return gaussian_blur(
             images,
             kernel_size=config["kernel_size"],
             sigma=config["sigma"],
-        )
+        ), masks
     if name == "downscale":
-        return downscale(images, scale_factor=config["scale_factor"])
+        return downscale(images, scale_factor=config["scale_factor"]), masks
     if name == "rotation":
-        return rotation(images, angle=config["angle"])
+        attacked_images = rotation(images, angle=config["angle"])
+        attacked_masks = TF.rotate(
+            masks,
+            angle=config["angle"],
+            interpolation=InterpolationMode.NEAREST,
+            fill=0.0,
+        )
+        return attacked_images, attacked_masks
 
     raise ValueError(f"Unknown attack: {name}")
 
 
-def apply_random_attack(images: torch.Tensor, configs: list[dict]) -> torch.Tensor:
-    """Apply one randomly selected attack configuration."""
-    return apply_attack(images, random.choice(configs))
+def apply_random_attack(
+    images: torch.Tensor,
+    masks: torch.Tensor,
+    configs: list[dict],
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Apply one randomly selected attack to an image-mask pair."""
+    return apply_attack(images, masks, random.choice(configs))

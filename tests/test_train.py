@@ -1,9 +1,11 @@
 import csv
 import io
+import random
 import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 import torch
 from torch import nn
@@ -12,9 +14,11 @@ from torch.utils.data import DataLoader, TensorDataset
 from src.train import (
     TrainConfig,
     _append_log,
+    _validate_reproducibly,
     fit,
     load_checkpoint,
     save_checkpoint,
+    train_one_epoch,
     validate,
 )
 
@@ -25,12 +29,190 @@ class PaddingOnlyEncoder(nn.Module):
 
 
 class MarkerDecoder(nn.Module):
-    def forward(self, images):
+    def forward(self, images, masks):
         markers = images[:, 0, 8, 0].unsqueeze(1)
-        return torch.where(markers > 0.5, 1.0, -1.0).expand(-1, 32)
+        return torch.where(markers > 0.5, 1.0, -1.0).expand(-1, 16)
+
+
+class PixelDecoder(nn.Module):
+    def forward(self, images, masks):
+        pixels = images[:, 0, 0, 0].unsqueeze(1)
+        return pixels.expand(-1, 16)
 
 
 class TrainingUtilitiesTest(unittest.TestCase):
+    def test_fit_can_freeze_encoder_and_remove_decoder_normalization(self) -> None:
+        images = torch.rand(2, 3, 16, 16)
+        masks = torch.ones(2, 1, 16, 16)
+        loader = DataLoader(TensorDataset(images, masks), batch_size=2)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = TrainConfig(
+                experiment_name="decoder-finetune",
+                epochs=1,
+                batch_size=2,
+                encoder_channels=8,
+                decoder_channels=8,
+                decoder_normalization="none",
+                freeze_encoder=True,
+                device="cpu",
+                checkpoint_dir=str(root / "checkpoints"),
+                log_path=str(root / "experiments.csv"),
+            )
+
+            with redirect_stdout(io.StringIO()):
+                encoder, decoder, history = fit(
+                    loader,
+                    loader,
+                    config=config,
+                )
+
+        self.assertEqual(len(history), 1)
+        self.assertFalse(any(parameter.requires_grad for parameter in encoder.parameters()))
+        self.assertFalse(
+            any(isinstance(module, nn.BatchNorm2d) for module in decoder.modules())
+        )
+        encoder_before = {name: value.clone() for name, value in encoder.state_dict().items()}
+        decoder_before = {name: value.clone() for name, value in decoder.state_dict().items()}
+        encoder.train()
+        train_one_epoch(
+            encoder, decoder, loader,
+            torch.optim.Adam(decoder.parameters(), lr=0.01),
+            nn.BCEWithLogitsLoss(), torch.device("cpu"),
+            fixed_messages=torch.ones(2, 16),
+        )
+        self.assertFalse(encoder.training)
+        for name, value in encoder.state_dict().items():
+            torch.testing.assert_close(value, encoder_before[name], rtol=0, atol=0)
+        self.assertTrue(any(
+            not torch.equal(value, decoder_before[name])
+            for name, value in decoder.state_dict().items()
+        ))
+
+    def test_validation_balances_attack_configs_across_batches(self) -> None:
+        images = torch.zeros(10, 3, 16, 16)
+        masks = torch.ones(10, 1, 16, 16)
+        loader = DataLoader(TensorDataset(images, masks), batch_size=2)
+        attack_names = ["first", "second", "third"]
+        selected_attacks = []
+
+        def record_attack(batch, batch_masks, configs):
+            selected_attacks.append(configs[0]["name"])
+            return batch, batch_masks
+
+        with patch(
+            "src.train.apply_random_attack",
+            side_effect=record_attack,
+        ):
+            validate(
+                PaddingOnlyEncoder(),
+                PixelDecoder(),
+                loader,
+                nn.BCEWithLogitsLoss(),
+                torch.device("cpu"),
+                message_length=16,
+                image_loss_weight=0.0,
+                attack_configs=[{"name": name} for name in attack_names],
+                fixed_messages=torch.zeros(10, 16),
+            )
+
+        counts = [selected_attacks.count(name) for name in attack_names]
+        self.assertEqual(len(selected_attacks), len(loader))
+        self.assertLessEqual(max(counts) - min(counts), 1)
+
+    def test_robust_validation_is_reproducible_and_preserves_rng(self) -> None:
+        images = torch.zeros(2, 3, 16, 16)
+        masks = torch.ones(2, 1, 16, 16)
+        loader = DataLoader(TensorDataset(images, masks), batch_size=2)
+        messages = torch.zeros(2, 16)
+
+        torch.manual_seed(123)
+        expected_next_random = torch.rand(4)
+        torch.manual_seed(123)
+        python_state = random.getstate()
+
+        first = _validate_reproducibly(
+            PaddingOnlyEncoder(),
+            PixelDecoder(),
+            loader,
+            nn.BCEWithLogitsLoss(),
+            torch.device("cpu"),
+            message_length=16,
+            image_loss_weight=0.0,
+            attack_configs=[{"name": "gaussian_noise", "std": 0.1}],
+            fixed_messages=messages,
+        )
+        second = _validate_reproducibly(
+            PaddingOnlyEncoder(),
+            PixelDecoder(),
+            loader,
+            nn.BCEWithLogitsLoss(),
+            torch.device("cpu"),
+            message_length=16,
+            image_loss_weight=0.0,
+            attack_configs=[{"name": "gaussian_noise", "std": 0.1}],
+            fixed_messages=messages,
+        )
+
+        self.assertEqual(first, second)
+        torch.testing.assert_close(torch.rand(4), expected_next_random)
+        self.assertEqual(random.getstate(), python_state)
+
+    def test_validation_restores_rng_after_error(self) -> None:
+        images = torch.zeros(2, 3, 16, 16)
+        masks = torch.ones(2, 1, 16, 16)
+        loader = DataLoader(TensorDataset(images, masks), batch_size=2)
+        python_state = random.getstate()
+        torch_state = torch.get_rng_state().clone()
+        with self.assertRaises(ValueError):
+            _validate_reproducibly(
+                PaddingOnlyEncoder(), PixelDecoder(), loader,
+                nn.BCEWithLogitsLoss(), torch.device("cpu"),
+                message_length=16, image_loss_weight=0.0,
+                attack_configs=None, fixed_messages=torch.zeros(1, 16),
+            )
+        self.assertEqual(random.getstate(), python_state)
+        torch.testing.assert_close(torch.get_rng_state(), torch_state, rtol=0, atol=0)
+
+    def test_fit_stops_at_target_validation_ber(self) -> None:
+        images = torch.rand(2, 3, 16, 16)
+        masks = torch.ones(2, 1, 16, 16)
+        loader = DataLoader(TensorDataset(images, masks), batch_size=2)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = TrainConfig(
+                experiment_name="target-ber",
+                epochs=3,
+                batch_size=2,
+                encoder_channels=8,
+                decoder_channels=8,
+                learning_rate=0.0,
+                device="cpu",
+                checkpoint_dir=str(root / "checkpoints"),
+                log_path=str(root / "experiments.csv"),
+                checkpoint_metric="ber",
+                target_val_ber=0.2,
+            )
+
+            with patch("src.train._validate_reproducibly", side_effect=[
+                {"loss": 0.6, "ber": 0.2, "exact_accuracy": 0.0, "psnr": 30.0},
+                {"loss": 0.7, "ber": 0.1, "exact_accuracy": 0.0, "psnr": 30.0},
+            ]), redirect_stdout(io.StringIO()):
+                _, _, history = fit(loader, loader, config=config)
+
+            checkpoint = torch.load(
+                root / "checkpoints" / "target-ber" / "best_model.pt",
+                map_location="cpu",
+                weights_only=False,
+            )
+
+        self.assertEqual(len(history), 2)
+        self.assertEqual(checkpoint["epoch"], 1)
+        self.assertEqual(checkpoint["best_val_metric"], history[1]["val_ber"])
+        self.assertEqual(checkpoint["config"]["checkpoint_metric"], "ber")
+
     def test_log_columns_must_match(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "experiments.csv"
@@ -52,7 +234,7 @@ class TrainingUtilitiesTest(unittest.TestCase):
             loader,
             nn.BCEWithLogitsLoss(),
             torch.device("cpu"),
-            fixed_messages=torch.zeros(3, 32),
+            fixed_messages=torch.zeros(3, 16),
         )
 
         self.assertEqual(stats["image_loss"], 0.0)
@@ -73,8 +255,8 @@ class TrainingUtilitiesTest(unittest.TestCase):
                 experiment_name="smoke",
                 epochs=2,
                 batch_size=2,
-                encoder_channels=(32, 24, 16),
-                decoder_channels=(16, 32, 64),
+                encoder_channels=24,
+                decoder_channels=32,
                 encoder_max_delta=0.03,
                 learning_rate=0.0,
                 device="cpu",
@@ -84,12 +266,19 @@ class TrainingUtilitiesTest(unittest.TestCase):
             )
 
             output = io.StringIO()
-            with redirect_stdout(output):
-                encoder, decoder, history = fit(
-                    train_loader,
-                    val_loader,
-                    config=config,
-                )
+            with patch("src.train.validate", wraps=validate) as validate_mock:
+                with redirect_stdout(output):
+                    encoder, decoder, history = fit(
+                        train_loader,
+                        val_loader,
+                        config=config,
+                    )
+            first_val_messages = validate_mock.call_args_list[0].kwargs[
+                "fixed_messages"
+            ]
+            second_val_messages = validate_mock.call_args_list[1].kwargs[
+                "fixed_messages"
+            ]
             checkpoint_path = root / "checkpoints" / "smoke" / "last.pt"
             checkpoint = torch.load(
                 checkpoint_path,
@@ -105,24 +294,24 @@ class TrainingUtilitiesTest(unittest.TestCase):
 
             self.assertTrue(checkpoint_path.exists())
 
-        self.assertEqual(history[0]["val_loss"], history[1]["val_loss"])
-        self.assertEqual(encoder.conv1.out_channels, 32)
-        self.assertEqual(decoder.conv3.out_channels, 64)
+        torch.testing.assert_close(first_val_messages, second_val_messages)
+        self.assertEqual(encoder.conv1.out_channels, 24)
+        self.assertEqual(decoder.conv5.out_channels, 32)
         self.assertEqual(checkpoint["config"]["experiment_name"], "smoke")
         self.assertEqual(
             checkpoint["config"]["encoder_channels"],
-            (32, 24, 16),
+            24,
         )
         self.assertEqual(
             checkpoint["config"]["decoder_channels"],
-            (16, 32, 64),
+            32,
         )
         self.assertEqual(checkpoint["config"]["encoder_max_delta"], 0.03)
         self.assertEqual(checkpoint["config"]["attack_configs"], [{"name": "none"}])
         self.assertEqual(len(rows), 2)
         self.assertTrue(all(row["experiment"] == "smoke" for row in rows))
-        self.assertEqual(rows[0]["encoder_channels"], "[32, 24, 16]")
-        self.assertEqual(rows[0]["decoder_channels"], "[16, 32, 64]")
+        self.assertEqual(rows[0]["encoder_channels"], "24")
+        self.assertEqual(rows[0]["decoder_channels"], "32")
         self.assertEqual(rows[0]["encoder_max_delta"], "0.03")
         self.assertGreaterEqual(history[0]["epoch_seconds"], 0.0)
         self.assertIn("Epoch 1/2", output.getvalue())
