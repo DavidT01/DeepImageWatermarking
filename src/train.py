@@ -17,6 +17,8 @@ from src.encoder import WatermarkEncoder
 from src.image_metrics import mean_squared_error, peak_signal_noise_ratio
 from src.message_metrics import bit_error_rate, exact_message_accuracy
 from src.noise import apply_random_attack
+from src.simple_encoder import SimpleWatermarkEncoder
+from src.simple_decoder import SimpleWatermarkDecoder
 from src.utils import SEED, set_seed
 
 @dataclass
@@ -27,8 +29,8 @@ class TrainConfig:
     epochs: int = 20
     batch_size: int = 32
     message_length: int = 16
-    encoder_channels: int = 40
-    decoder_channels: int = 40
+    encoder_channels: int | tuple[int, int, int] | None = None
+    decoder_channels: int | tuple[int, int, int] | None = None
     decoder_normalization: str = "batch"
     freeze_encoder: bool = False
     encoder_max_delta: float | None = None
@@ -42,6 +44,55 @@ class TrainConfig:
     print_every: int = 1
     checkpoint_metric: str = "loss"
     target_val_ber: float | None = None
+    architecture: str = "advanced"
+    decoder_pooling: str = "max"
+
+    def __post_init__(self) -> None:
+        if self.architecture not in {"advanced", "simple"}:
+            raise ValueError("architecture must be 'advanced' or 'simple'")
+        if self.encoder_channels is None:
+            self.encoder_channels = (64, 64, 32) if self.architecture == "simple" else 40
+        if self.decoder_channels is None:
+            self.decoder_channels = (32, 64, 128) if self.architecture == "simple" else 40
+        if self.architecture == "simple":
+            self.decoder_normalization = "none"
+
+
+def build_models(config: TrainConfig) -> tuple[nn.Module, nn.Module]:
+    """Construct the configured encoder and decoder on CPU."""
+    if config.architecture == "simple":
+        if not isinstance(config.encoder_channels, (tuple, list)) or len(config.encoder_channels) != 3:
+            raise ValueError("Simple encoder requires three channel widths")
+        if not isinstance(config.decoder_channels, (tuple, list)) or len(config.decoder_channels) != 3:
+            raise ValueError("Simple decoder requires three channel widths")
+        return (
+            SimpleWatermarkEncoder(
+                message_length=config.message_length,
+                feature_channels=tuple(config.encoder_channels),
+                max_delta=config.encoder_max_delta,
+            ),
+            SimpleWatermarkDecoder(
+                message_length=config.message_length,
+                feature_channels=tuple(config.decoder_channels),
+                pooling=config.decoder_pooling,
+            ),
+        )
+    if config.architecture != "advanced":
+        raise ValueError("architecture must be 'advanced' or 'simple'")
+    if not isinstance(config.encoder_channels, int) or not isinstance(config.decoder_channels, int):
+        raise ValueError("Advanced architecture requires integer channel widths")
+    return (
+        WatermarkEncoder(
+            message_length=config.message_length,
+            feature_channels=config.encoder_channels,
+            max_delta=config.encoder_max_delta,
+        ),
+        WatermarkDecoder(
+            message_length=config.message_length,
+            feature_channels=config.decoder_channels,
+            normalization=config.decoder_normalization,
+        ),
+    )
 
 def _select_device(device: str) -> torch.device:
     """Select the configured training device."""
@@ -351,16 +402,9 @@ def fit(
 
     set_seed()
     device = _select_device(config.device)
-    encoder = WatermarkEncoder(
-        message_length=config.message_length,
-        feature_channels=config.encoder_channels,
-        max_delta=config.encoder_max_delta,
-    ).to(device)
-    decoder = WatermarkDecoder(
-        message_length=config.message_length,
-        feature_channels=config.decoder_channels,
-        normalization=config.decoder_normalization,
-    ).to(device)
+    encoder, decoder = build_models(config)
+    encoder.to(device)
+    decoder.to(device)
     if config.freeze_encoder:
         encoder.requires_grad_(False)
 

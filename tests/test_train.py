@@ -1,5 +1,6 @@
 import csv
 import io
+import random
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -17,6 +18,7 @@ from src.train import (
     fit,
     load_checkpoint,
     save_checkpoint,
+    train_one_epoch,
     validate,
 )
 
@@ -71,6 +73,22 @@ class TrainingUtilitiesTest(unittest.TestCase):
         self.assertFalse(
             any(isinstance(module, nn.BatchNorm2d) for module in decoder.modules())
         )
+        encoder_before = {name: value.clone() for name, value in encoder.state_dict().items()}
+        decoder_before = {name: value.clone() for name, value in decoder.state_dict().items()}
+        encoder.train()
+        train_one_epoch(
+            encoder, decoder, loader,
+            torch.optim.Adam(decoder.parameters(), lr=0.01),
+            nn.BCEWithLogitsLoss(), torch.device("cpu"),
+            fixed_messages=torch.ones(2, 16),
+        )
+        self.assertFalse(encoder.training)
+        for name, value in encoder.state_dict().items():
+            torch.testing.assert_close(value, encoder_before[name], rtol=0, atol=0)
+        self.assertTrue(any(
+            not torch.equal(value, decoder_before[name])
+            for name, value in decoder.state_dict().items()
+        ))
 
     def test_validation_balances_attack_configs_across_batches(self) -> None:
         images = torch.zeros(10, 3, 16, 16)
@@ -112,6 +130,7 @@ class TrainingUtilitiesTest(unittest.TestCase):
         torch.manual_seed(123)
         expected_next_random = torch.rand(4)
         torch.manual_seed(123)
+        python_state = random.getstate()
 
         first = _validate_reproducibly(
             PaddingOnlyEncoder(),
@@ -138,6 +157,23 @@ class TrainingUtilitiesTest(unittest.TestCase):
 
         self.assertEqual(first, second)
         torch.testing.assert_close(torch.rand(4), expected_next_random)
+        self.assertEqual(random.getstate(), python_state)
+
+    def test_validation_restores_rng_after_error(self) -> None:
+        images = torch.zeros(2, 3, 16, 16)
+        masks = torch.ones(2, 1, 16, 16)
+        loader = DataLoader(TensorDataset(images, masks), batch_size=2)
+        python_state = random.getstate()
+        torch_state = torch.get_rng_state().clone()
+        with self.assertRaises(ValueError):
+            _validate_reproducibly(
+                PaddingOnlyEncoder(), PixelDecoder(), loader,
+                nn.BCEWithLogitsLoss(), torch.device("cpu"),
+                message_length=16, image_loss_weight=0.0,
+                attack_configs=None, fixed_messages=torch.zeros(1, 16),
+            )
+        self.assertEqual(random.getstate(), python_state)
+        torch.testing.assert_close(torch.get_rng_state(), torch_state, rtol=0, atol=0)
 
     def test_fit_stops_at_target_validation_ber(self) -> None:
         images = torch.rand(2, 3, 16, 16)
@@ -157,10 +193,13 @@ class TrainingUtilitiesTest(unittest.TestCase):
                 checkpoint_dir=str(root / "checkpoints"),
                 log_path=str(root / "experiments.csv"),
                 checkpoint_metric="ber",
-                target_val_ber=1.01,
+                target_val_ber=0.2,
             )
 
-            with redirect_stdout(io.StringIO()):
+            with patch("src.train._validate_reproducibly", side_effect=[
+                {"loss": 0.6, "ber": 0.2, "exact_accuracy": 0.0, "psnr": 30.0},
+                {"loss": 0.7, "ber": 0.1, "exact_accuracy": 0.0, "psnr": 30.0},
+            ]), redirect_stdout(io.StringIO()):
                 _, _, history = fit(loader, loader, config=config)
 
             checkpoint = torch.load(
@@ -169,8 +208,9 @@ class TrainingUtilitiesTest(unittest.TestCase):
                 weights_only=False,
             )
 
-        self.assertEqual(len(history), 1)
-        self.assertEqual(checkpoint["best_val_metric"], history[0]["val_ber"])
+        self.assertEqual(len(history), 2)
+        self.assertEqual(checkpoint["epoch"], 1)
+        self.assertEqual(checkpoint["best_val_metric"], history[1]["val_ber"])
         self.assertEqual(checkpoint["config"]["checkpoint_metric"], "ber")
 
     def test_log_columns_must_match(self) -> None:

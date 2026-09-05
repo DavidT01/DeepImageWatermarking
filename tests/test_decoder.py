@@ -64,6 +64,13 @@ class WatermarkDecoderTest(unittest.TestCase):
         masks = torch.ones(2, 1, 32, 32)
 
         with torch.no_grad():
+            for module in decoder.modules():
+                if isinstance(module, nn.BatchNorm2d):
+                    channels = module.num_features
+                    module.running_mean.copy_(torch.linspace(-0.3, 0.3, channels))
+                    module.running_var.copy_(torch.linspace(0.5, 1.5, channels))
+                    module.weight.copy_(torch.linspace(0.7, 1.2, channels))
+                    module.bias.copy_(torch.linspace(-0.2, 0.2, channels))
             expected = decoder(images, masks)
             decoder.fuse_batch_norm()
             actual = decoder(images, masks)
@@ -72,6 +79,9 @@ class WatermarkDecoderTest(unittest.TestCase):
         self.assertFalse(
             any(isinstance(module, nn.BatchNorm2d) for module in decoder.modules())
         )
+        self.assertEqual(decoder.normalization, "none")
+        with self.assertRaises(ValueError):
+            decoder.fuse_batch_norm()
 
     def test_decoder_without_normalization(self) -> None:
         decoder = WatermarkDecoder(normalization="none")

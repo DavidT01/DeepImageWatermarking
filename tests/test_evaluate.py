@@ -1,3 +1,4 @@
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -35,7 +36,40 @@ class MessageDecoder(nn.Module):
         return logits
 
 
+class ContentOffsetEncoder(nn.Module):
+    def forward(self, images, messages, masks):
+        return images + images[:, :1, :1, :1] * masks
+
+
 class EvaluationUtilitiesTest(unittest.TestCase):
+    def test_global_metrics_ignore_batch_partition_and_attack_distortion(self) -> None:
+        images = torch.tensor([0.1, 0.2, 0.3]).view(3, 1, 1, 1).expand(3, 3, 32, 32)
+        masks = torch.zeros(3, 1, 32, 32)
+        for index, height in enumerate((8, 16, 24)):
+            masks[index, :, :height, :] = 1
+        dataset = TensorDataset(images, masks)
+        expected_mse = (0.01 * 8 + 0.04 * 16 + 0.09 * 24) / (8 + 16 + 24)
+        results = []
+        for batch_size in (1, 2, 3):
+            with self.subTest(batch_size=batch_size):
+                metrics = evaluate_model(
+                    ContentOffsetEncoder(), MessageDecoder(),
+                    DataLoader(dataset, batch_size=batch_size), "cpu",
+                )
+                self.assertAlmostEqual(metrics["mse"], expected_mse, places=7)
+                self.assertAlmostEqual(metrics["psnr"], 10 * math.log10(1 / expected_mse), places=5)
+                results.append(metrics)
+        for metrics in results[1:]:
+            for key in results[0]:
+                self.assertAlmostEqual(metrics[key], results[0][key], places=5)
+
+        attacked = evaluate_model(
+            ContentOffsetEncoder(), MessageDecoder(), DataLoader(dataset, batch_size=2),
+            "cpu", attacks=[{"name": "gaussian_noise", "std": 0.1}],
+        )
+        for key in ("mse", "psnr", "ssim"):
+            self.assertEqual(attacked[key], results[1][key])
+
     def test_load_models(self) -> None:
         encoder_channels = 24
         decoder_channels = 32
