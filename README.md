@@ -51,7 +51,7 @@ python -m unittest discover -s tests -v
 
 ## Example
 
-<img src="docs/evaluation-example.png" alt="Original, encoded and attacked images for the simple and advanced models" width="900">
+<img src="images/evaluation-example.png" alt="Original, encoded and attacked images for the simple and advanced models" width="900">
 
 ## References
 
